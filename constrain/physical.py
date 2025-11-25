@@ -8,6 +8,30 @@ import torch.nn as nn
 import numpy as np
 
 
+def compute_label_mse(model, x_label, u_label):
+    """
+    公用的 Label MSE Loss 计算函数。
+
+    参数:
+        model: 神经网络模型
+        x_label: 标签数据的输入坐标 (t, x) [N, D]
+        u_label: 标签数据的真实值 u [N, 1]
+
+    返回:
+        mse_loss: 计算出的均方误差
+    """
+    # 如果没有标签数据，返回 0
+    if x_label is None or u_label is None:
+        return torch.tensor(0.0, device=next(model.parameters()).device)
+
+    # 1. 前向传播
+    u_pred = model(x_label)
+
+    # 2. 计算 MSE
+    loss_fn = nn.MSELoss()
+    loss = loss_fn(u_pred, u_label)
+
+    return loss
 class HarmonicOscillator:
     """
     封装了简谐振子问题 (u_tt + u = 0) 的所有逻辑。
@@ -38,6 +62,8 @@ class HarmonicOscillator:
         self.u_internal_target = torch.tensor([[0.0]]).to(self.device)  # u(pi) = 0
 
         print("Problem (Harmonic Oscillator) initialized.")
+        self.x_label = self.t_internal
+        self.u_label = self.u_internal_target
 
     def data_generate(self):
         """
@@ -74,6 +100,7 @@ class HarmonicOscillator:
         loss_data_internal = self.loss_fn(u_at_internal, self.u_internal_target)
 
         loss_data = loss_bc_u + loss_bc_ut + loss_data_internal
+
 
         # --- 损失2：物理损失 (Physics Loss) ---
         # 方程为: u_tt + u = 0
@@ -157,7 +184,8 @@ class HeatEquation:
         self.u_bc_target = torch.zeros_like(t_bc).to(self.device)
 
         print("Problem (Heat Equation) initialized.")
-
+        self.x_label = None
+        self.u_label = None
     def data_generate(self):
         """
         生成动态的物理配置点 (t, x)。
@@ -279,7 +307,8 @@ class WaveEquation:
         self.u_bc_target = torch.zeros_like(t_bc).to(self.device)
 
         print("Problem (Wave Equation) initialized.")
-
+        self.x_label = None
+        self.u_label = None
     def data_generate(self):
         """
         生成动态的物理配置点 (t, x)。
@@ -407,7 +436,8 @@ class BurgersEquation:
         self.u_bc_target = torch.zeros_like(t_bc).to(self.device)
 
         print("Problem (Burgers' Equation) initialized.")
-
+        self.x_label = None
+        self.u_label = None
     def data_generate(self):
         """
         生成动态的物理配置点 (t, x)。
@@ -526,7 +556,8 @@ class CoupledWaveEquation:
         self.u_bc_target = torch.zeros_like(t_bc).to(self.device)  # u(t, 0)=0, u(t, 1)=0
 
         print("Problem (Coupled Wave Equation) initialized.")
-
+        self.x_label = None
+        self.u_label = None
     def get_learnable_parameters(self):
         """(新函数) 此问题没有可学习参数，返回空列表"""
         return []

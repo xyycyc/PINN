@@ -3,7 +3,8 @@
 #       - 使用 argparse 选择模型和问题
 #       - 自动匹配网络输入/输出维度
 #       - 执行训练循环并绘图
-
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import torch
 import torch.optim as optim
 import argparse
@@ -13,7 +14,7 @@ from plot_comparison import plot_results
 from network import MLP, FourierFeatureMLP, ResNetMLP, SIREN
 
 # (假设物理问题在 constrain.py 中)
-from constrain import HarmonicOscillator, HeatEquation, BurgersEquation, WaveEquation, CoupledWaveEquation
+from constrain import HarmonicOscillator, HeatEquation, BurgersEquation, WaveEquation, CoupledWaveEquation,compute_label_mse
 
 # --- 1. 配置中心 ---
 
@@ -50,124 +51,90 @@ NETWORK_CONFIG = {
 
 
 def get_network(name, input_dim, output_dim, config):
-    """
-    根据名称和配置实例化网络架构。
-    """
     if name == "MLP":
-        return MLP(input_dim=input_dim, output_dim=output_dim,
-                   hidden_dim=config['hidden_dim'], num_layers=config['num_layers'])
-
+        return MLP(input_dim, output_dim, config['hidden_dim'], config['num_layers'])
     elif name == "FourierFeatureMLP":
-        return FourierFeatureMLP(input_dim=input_dim, output_dim=output_dim,
-                                 hidden_dim=config['hidden_dim'], num_layers=config['num_layers'],
-                                 num_freqs=config['num_freqs'], sigma=config['sigma'])
-
+        return FourierFeatureMLP(input_dim, output_dim, config['hidden_dim'], config['num_layers'], config['num_freqs'],
+                                 config['sigma'])
     elif name == "ResNetMLP":
-        return ResNetMLP(input_dim=input_dim, output_dim=output_dim,
-                         hidden_dim=config['hidden_dim'], num_blocks=config['num_blocks'])
-
+        return ResNetMLP(input_dim, output_dim, config['hidden_dim'], config['num_blocks'])
     elif name == "SIREN":
-        return SIREN(input_dim=input_dim, output_dim=output_dim,
-                     hidden_dim=config['hidden_dim'], num_layers=config['num_layers'],
-                     omega=config['omega'])
-    else:
-        raise ValueError(f"未知的网络架构: {name}")
+        return SIREN(input_dim, output_dim, config['hidden_dim'], config['num_layers'], config['omega'])
+    raise ValueError(f"Unknown network: {name}")
 
 
 def main(args):
-    """
-    主执行函数。
-    """
-    # --- 1. 设置 ---
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"--- 实验设置 ---")
-    print(f"使用设备: {device}")
-    print(f"选择问题: {args.problem_name}")
-    print(f"选择架构: {args.model_name}")
+    print(f"--- 实验设置: {args.problem_name} | {args.model_name} ---")
+    print(f"--- 权重: a(Data)={args.a}, b(Physics)={args.b}, c(Label MSE)={args.c} ---")
 
-    # --- 2. 初始化物理问题 (封装了数据和Loss) ---
+    # 1. 初始化问题
     if args.problem_name not in PROBLEM_CONFIG:
-        raise ValueError(f"未知问题: {args.problem_name}。请在 PROBLEM_CONFIG 中注册。")
+        raise ValueError(f"Unknown problem: {args.problem_name}")
 
-    problem_info = PROBLEM_CONFIG[args.problem_name]
-    ProblemClass = problem_info["class"]
-    problem = ProblemClass(device=device, N_physics=args.n_physics)
+    p_info = PROBLEM_CONFIG[args.problem_name]
+    problem = p_info["class"](device=device, N_physics=args.n_physics)
 
-    # --- 3. 初始化模型 ---
-    # (自动从问题中获取 input_dim 和 output_dim)
-    input_dim = problem_info["input_dim"]
-    output_dim = problem_info["output_dim"]
+    # 2. 初始化网络
+    pinn = get_network(args.model_name, p_info["input_dim"], p_info["output_dim"], NETWORK_CONFIG).to(device)
 
-    pinn = get_network(args.model_name, input_dim, output_dim, NETWORK_CONFIG).to(device)
-
-    # --- 4. 初始化优化器 ---
-    # (自动包含 "反问题" 的可学习参数)
+    # 3. 初始化优化器
     learnable_params = list(pinn.parameters())
     if hasattr(problem, 'get_learnable_parameters'):
         learnable_params += problem.get_learnable_parameters()
-        print("注意: 优化器已包含问题中的可学习参数 (用于反问题)。")
-
     optimizer = optim.Adam(learnable_params, lr=args.lr)
 
-    # --- 5. 训练循环 ---
-    print(f"--- 开始训练 (Epochs: {args.epochs}, LR: {args.lr}) ---")
+    # [简化] 直接读取统一接口 (得益于第一步的修改)
+    if problem.x_label is not None:
+        print(f"检测到标签数据: Shape {problem.x_label.shape}")
+    else:
+        print("无标签数据 (MSE Loss 将为 0)")
 
+    print("Starting training...")
     for epoch in range(args.epochs):
 
-        # (从问题中生成动态数据点)
-        # (注意: 'physics_points' 是一个通用名称)
-        # (对于1D问题, 它是 t_physics; 对于2D问题, 它是 tx_physics)
         physics_points = problem.data_generate()
 
         optimizer.zero_grad()
 
-        # (从问题中计算损失)
-        # (我们假设所有 'loss_cal' 都接受 (model, points) 两个参数)
+        # A. 原始两部分 Loss (Data + Physics)
         loss_data, loss_physics = problem.loss_cal(pinn, physics_points)
 
-        # (应用命令行中的权重)
-        loss = args.a * loss_data + args.b * loss_physics
+        # B. 新增 Label MSE Loss
+        # 直接调用导入的函数，传入 problem 中的统一属性
+        loss_mse = compute_label_mse(pinn, problem.x_label, problem.u_label)
+
+        # C. 组合总 Loss
+        loss = args.a * loss_data + args.b * loss_physics + args.c * loss_mse
 
         loss.backward()
         optimizer.step()
 
         if (epoch + 1) % 1000 == 0:
-            print(f'Epoch [{epoch + 1}/{args.epochs}], Loss: {loss.item():.4f}, '
-                  f'Data Loss: {loss_data.item():.4f}, '
-                  f'Physics Loss: {loss_physics.item():.4f}')
+            print(f'Epoch [{epoch + 1}/{args.epochs}] Total: {loss.item():.5f} | '
+                  f'Data: {loss_data.item():.5f} | '
+                  f'Phy: {loss_physics.item():.5f} | '
+                  f'Label: {loss_mse.item():.5f}')
 
-    print("--- 训练完成 ---")
+    print("Training finished.")
+    try:
+        plot_results(pinn, device, problem)
+    except Exception as e:
+        print(f"Plotting failed: {e}")
 
-    # --- 6. 验证和绘图 ---
-    plot_results(pinn, device, problem)
 
-
-
-# --- Python标准入口点 ---
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="PINN 训练器")
-
-    # --- 核心选择 ---
+    # ... (argparse 部分保持不变) ...
+    parser = argparse.ArgumentParser()
     parser.add_argument('--model_name', type=str, default='MLP',
-                        choices=['MLP', 'FourierFeatureMLP', 'ResNetMLP', 'SIREN'],
-                        help='要使用的网络架构')
-    parser.add_argument('--problem_name', type=str, default='CoupledWaveEquation',
-                        choices=list(PROBLEM_CONFIG.keys()),
-                        help='要解决的物理约束问题')
-
-    # --- 训练超参数 ---
-    parser.add_argument('--lr', type=float, default=5e-4,
-                        help='学习率')
-    parser.add_argument('--epochs', type=int, default=2000,
-                        help='训练的总轮数')
-    parser.add_argument('--n_physics', type=int, default=1000,
-                        help='每轮生成的物理配置点数量')
-
-    # --- 损失权重超参数 ---
-    parser.add_argument('--a', type=float, default=10.0,
-                        help='数据损失 (loss_data) 的权重')
-    parser.add_argument('--b', type=float, default=1.0,
-                        help='物理损失 (loss_physics) 的权重')
+                        choices=['MLP', 'FourierFeatureMLP', 'ResNetMLP', 'SIREN'])
+    parser.add_argument('--problem_name', type=str, default='HarmonicOscillator', choices=list(PROBLEM_CONFIG.keys()))
+    parser.add_argument('--lr', type=float, default=5e-4)
+    parser.add_argument('--epochs', type=int, default=5000)
+    parser.add_argument('--n_physics', type=int, default=1000)
+    parser.add_argument('--a', type=float, default=1.0, help='Weight for Data Loss')
+    parser.add_argument('--b', type=float, default=1.0, help='Weight for Physics Loss')
+    parser.add_argument('--c', type=float, default=10.0, help='Weight for Label MSE Loss')
 
     args = parser.parse_args()
     main(args)
