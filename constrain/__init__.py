@@ -1,1 +1,0 @@
-from .physical import HarmonicOscillator, HeatEquation, BurgersEquation, WaveEquation,CoupledWaveEquation,compute_label_mse

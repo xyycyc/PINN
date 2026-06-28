@@ -1,0 +1,15 @@
+# ai_model 运行时依赖（Python 3.10+ 推荐）
+# 安装: pip install -r requirements.txt
+# 说明:
+# - torch 若需 CUDA 请从 https://pytorch.org 按环境选择对应 wheel。
+# - Tkinter 属于 Python 标准库，不在本文件单独声明。
+# - 规则映射（database/rule/*.csv）仅使用标准库 csv/pathlib，无新增第三方依赖。
+
+torch>=2.0.0
+numpy>=1.22.0
+pandas>=1.5.0
+tqdm>=4.64.0
+matplotlib>=3.6.0
+scipy>=1.9.0
+Pillow>=9.0.0
+python>=3.10

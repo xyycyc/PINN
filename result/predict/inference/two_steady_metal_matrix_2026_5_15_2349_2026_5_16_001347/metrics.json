@@ -1,0 +1,22 @@
+{
+  "samples": 7,
+  "compute_loss": false,
+  "enable_plots": true,
+  "enable_benchmark": true,
+  "temperature_mae": 31.741500854492188,
+  "temperature_rmse": 37.5432243347168,
+  "eval_total_seconds": 0.15665039996383712,
+  "eval_latency_ms_per_sample": 22.378628566262446,
+  "eval_throughput_samples_per_sec": 44.68549075914237,
+  "artifacts_dir": "D:\\Desktop\\code\\ai_model\\result\\predict\\inference\\two_steady_metal_matrix_2026_5_15_2349_2026_5_16_001347",
+  "checkpoint": "D:\\Desktop\\code\\ai_model\\result\\train\\checkpoint\\two_steady_metal_matrix_2026_5_15_2349\\ai_model.pt",
+  "manifest": "D:\\Desktop\\code\\ai_model\\database\\data_process\\metal_matrix\\test_manifest.json",
+  "benchmark_enabled": 1.0,
+  "benchmark_warmup_samples_requested": 64.0,
+  "benchmark_warmup_samples_effective": 4.0,
+  "benchmark_runs": 3.0,
+  "benchmark_samples": 21.0,
+  "benchmark_total_seconds": 0.005865200015250593,
+  "benchmark_latency_ms_per_sample": 0.27929523882145685,
+  "benchmark_throughput_samples_per_sec": 3580.4405553768256
+}

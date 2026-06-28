@@ -1,0 +1,16 @@
+# Raw repeated-sampling data requested to stay local.
+database/raw/10times/
+**/10times/
+
+# Model parameters and checkpoint weights.
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.safetensors
+*.h5
+*.hdf5
+*.pkl
+*.joblib
+*.bin
+*.weights
