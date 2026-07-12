@@ -15,6 +15,7 @@ from ..config import AIModelConfig
 from ..data_process import AITemperatureDataset
 from ..fortran import backend_name, compute_prediction_metrics
 from .network import AIReconstructionModel
+from .point_field import DirectPointFieldModel, kelvin_metrics
 from .checkpoint_runtime import load_model_state_strict, sync_config_for_inference
 from .trainer import ReconstructionTrainer, _default_device
 from .waveform_io import postprocess_model_outputs, prepare_model_waveform_input
@@ -211,6 +212,15 @@ def predict_and_compare(
             json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         return metrics
+
+    if dataset.is_point_field:
+        return _predict_point_field(
+            cfg, dataset, checkpoint_path, manifest_path, output_dir,
+            enable_plots=enable_plots,
+            enable_benchmark=enable_benchmark,
+            benchmark_warmup_samples=benchmark_warmup_samples,
+            benchmark_runs=benchmark_runs,
+        )
 
     loader = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=False)
     device = _default_device(cfg)
@@ -411,4 +421,122 @@ def predict_and_compare(
     (output_dir / "metrics.json").write_text(
         json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    return metrics
+
+
+def _predict_point_field(
+    cfg: AIModelConfig,
+    dataset: AITemperatureDataset,
+    checkpoint_path: Path,
+    manifest_path: Path,
+    output_dir: Path,
+    *,
+    enable_plots: bool,
+    enable_benchmark: bool,
+    benchmark_warmup_samples: int,
+    benchmark_runs: int,
+) -> dict[str, Any]:
+    """Predict fixed physical nodes and preserve the raw node table."""
+    device = _default_device(cfg)
+    bundle = torch.load(checkpoint_path, map_location=device)
+    if not isinstance(bundle, dict) or bundle.get("model_kind") != "direct_point_field":
+        raise ValueError("固定节点 manifest 需要 model_kind='direct_point_field' 的版本化 checkpoint")
+    if int(bundle.get("checkpoint_version", 0)) != 2:
+        raise ValueError(f"不支持的固定节点 checkpoint_version: {bundle.get('checkpoint_version')}")
+    point_count = int(bundle.get("point_count", 0))
+    if point_count != dataset.point_count:
+        raise ValueError(f"checkpoint/manifest 点数不一致: {point_count} != {dataset.point_count}")
+    checkpoint_norm = bundle.get("normalization", {})
+    for key in ("mean_k", "std_k"):
+        if not np.isclose(float(checkpoint_norm.get(key, np.nan)), float(dataset.normalization.get(key, np.nan))):
+            raise ValueError(f"checkpoint/manifest 温度标准化参数不一致: {key}")
+    checkpoint_sampling = bundle.get("sampling_metadata", {})
+    for key in ("sampling_version", "source_mesh_fingerprint"):
+        if checkpoint_sampling.get(key) != dataset.sampling_metadata.get(key):
+            raise ValueError(f"checkpoint/manifest 采样定义不一致: {key}")
+    model = DirectPointFieldModel(
+        point_count=point_count,
+        hidden_dim=cfg.hidden_dim,
+        latent_dim=cfg.latent_dim,
+        chunk_size=int(bundle.get("chunk_size", 1000)),
+    ).to(device)
+    model.load_state_dict(bundle["model_state"], strict=True)
+    model.eval()
+    loader = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=False)
+    pred_chunks: list[np.ndarray] = []
+    true_chunks: list[np.ndarray] = []
+    eval_start = time.perf_counter()
+    with torch.no_grad():
+        for batch in loader:
+            waveform = batch["waveform"].to(device)
+            waveform_norm, _, _ = prepare_model_waveform_input(waveform)
+            normalized = model(waveform_norm)
+            pred_chunks.append((normalized * dataset.temperature_std_k + dataset.temperature_mean_k).cpu().numpy())
+            true_chunks.append(batch["field_k"].numpy())
+    _synchronize_if_cuda(device)
+    eval_seconds = time.perf_counter() - eval_start
+    prediction_k = np.concatenate(pred_chunks, axis=0)
+    target_k = np.concatenate(true_chunks, axis=0)
+    with np.load(dataset.root / str(json.loads(manifest_path.read_text(encoding="utf-8"))["sampling_index"]), allow_pickle=False) as sampling:
+        node_ids = np.asarray(sampling["node_ids"], np.int64)
+        coordinates = np.asarray(sampling["coordinates_m"], np.float32)
+        material_ids = np.asarray(sampling["material_ids"], np.int32)
+        interface_side = np.asarray(sampling["interface_side"], np.int32)
+        sample_weights = np.asarray(sampling["sample_weights"], np.float32)
+    lo, hi = coordinates.min(axis=0), coordinates.max(axis=0)
+    boundary_tolerance = np.maximum((hi-lo)*1e-7, 1e-9)
+    boundary = np.any((np.abs(coordinates-lo) <= boundary_tolerance) |
+                      (np.abs(coordinates-hi) <= boundary_tolerance), axis=1)
+    masks: dict[str, np.ndarray] = {"boundary": boundary, "interface": interface_side > 0}
+    for material in np.unique(material_ids):
+        masks[f"material_{int(material)}"] = material_ids == material
+    high_threshold = float(np.quantile(target_k, 0.9))
+    metrics = kelvin_metrics(prediction_k, target_k, masks=masks)
+    metrics.update({
+        "samples": len(dataset), "point_count": point_count,
+        "model_kind": "direct_point_field", "checkpoint_version": 2,
+        "high_temperature_threshold_k": high_threshold,
+        "high_temperature": kelvin_metrics(prediction_k[target_k >= high_threshold], target_k[target_k >= high_threshold])["full_field"],
+        "eval_total_seconds": float(eval_seconds),
+        "eval_latency_ms_per_sample": float(eval_seconds * 1000.0 / max(len(dataset), 1)),
+        "parameter_count": int(sum(parameter.numel() for parameter in model.parameters())),
+        "parameter_bytes": int(sum(parameter.numel() * parameter.element_size() for parameter in model.parameters())),
+        "peak_cuda_memory_bytes": int(torch.cuda.max_memory_allocated(device)) if device.type == "cuda" else 0,
+        "checkpoint": str(checkpoint_path), "manifest": str(manifest_path),
+    })
+    np.savez_compressed(
+        output_dir / "predictions.npz", prediction_temperature_k=prediction_k,
+        target_temperature_k=target_k, node_ids=node_ids, coordinates_m=coordinates,
+        material_ids=material_ids, interface_side=interface_side, sample_weights=sample_weights,
+        sample_ids=np.array([str(r.get("sample_id", "")) for r in dataset.records]),
+    )
+    with (output_dir / "predictions.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["sample_id", "node_id", "x_m", "y_m", "temperature_k",
+                         "target_temperature_k", "material_id", "interface_side"])
+        for case_index, record in enumerate(dataset.records):
+            sample_id = str(record.get("sample_id", f"idx_{case_index}"))
+            for point in range(point_count):
+                writer.writerow([sample_id, int(node_ids[point]), f"{coordinates[point,0]:.9g}",
+                                 f"{coordinates[point,1]:.9g}", f"{prediction_k[case_index,point]:.7g}",
+                                 f"{target_k[case_index,point]:.7g}", int(material_ids[point]), int(interface_side[point])])
+    metadata = {
+        "checkpoint": str(checkpoint_path.resolve()), "checkpoint_version": 2,
+        "model_kind": "direct_point_field", "schema_version": int(dataset.schema_version),
+        "normalization": dict(dataset.normalization), "sampling": dict(dataset.sampling_metadata),
+        "temperature_unit": "K", "coordinate_unit": "m",
+        "raw_prediction_table": "predictions.csv",
+    }
+    (output_dir / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    if enable_plots and plt is not None:
+        fig, axes = plt.subplots(1, 3, figsize=(13, 4))
+        for ax, values, title in zip(axes, (target_k[0], prediction_k[0], prediction_k[0]-target_k[0]),
+                                     ("true K", "predicted K", "error K")):
+            image = ax.scatter(coordinates[:, 0], coordinates[:, 1], c=values, s=3, cmap="inferno" if "error" not in title else "seismic")
+            ax.set_title(title); fig.colorbar(image, ax=ax)
+        fig.tight_layout(); fig.savefig(output_dir / "point_field_compare.png", dpi=150); plt.close(fig)
+    if enable_benchmark:
+        metrics["benchmark_warmup_samples_requested"] = int(benchmark_warmup_samples)
+        metrics["benchmark_runs_requested"] = int(benchmark_runs)
+    (output_dir / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
     return metrics

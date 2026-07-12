@@ -5,7 +5,9 @@ from collections import defaultdict
 from dataclasses import asdict
 from pathlib import Path
 import csv
+import time
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -14,6 +16,7 @@ from tqdm.auto import tqdm
 from ..config import AIModelConfig
 from ..data_process import AITemperatureDataset
 from .network import AIReconstructionModel
+from .point_field import DirectPointFieldModel, weighted_temperature_loss
 from .rule_registry import default_training_time_stamp
 from .waveform_io import prepare_model_waveform_input
 
@@ -176,6 +179,8 @@ class ReconstructionTrainer:
         train_name: str | None = None,
     ) -> Path:
         dataset = AITemperatureDataset(manifest_path, config=self.config)
+        if dataset.is_point_field:
+            return self._train_point_field(dataset, checkpoint_name=checkpoint_name, train_name=train_name)
         loader = DataLoader(dataset, batch_size=self.config.batch_size, shuffle=True)
         model = self.build_model()
         optimizer = torch.optim.Adam(model.parameters(), lr=self.config.learning_rate)
@@ -249,6 +254,80 @@ class ReconstructionTrainer:
         )
         return checkpoint_path
 
+    def _train_point_field(
+        self,
+        dataset: AITemperatureDataset,
+        *,
+        checkpoint_name: str,
+        train_name: str | None,
+    ) -> Path:
+        """Train the versioned direct P-node model without changing legacy behavior."""
+        loader = DataLoader(dataset, batch_size=self.config.batch_size, shuffle=True)
+        model = DirectPointFieldModel(
+            point_count=dataset.point_count,
+            hidden_dim=self.config.hidden_dim,
+            latent_dim=self.config.latent_dim,
+        ).to(self.device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=self.config.learning_rate)
+        history: list[dict[str, float | str]] = []
+        training_started = time.perf_counter()
+        for epoch in tqdm(range(self.config.epochs), desc="train[direct_point_field]", unit="epoch"):
+            model.train()
+            total_loss = 0.0
+            total_mae_k = 0.0
+            batches = 0
+            for batch in loader:
+                waveform = batch["waveform"].to(self.device)
+                target = batch["field"].to(self.device)
+                weights = batch["sample_weights"].to(self.device)
+                optimizer.zero_grad()
+                waveform_norm, _, _ = prepare_model_waveform_input(waveform)
+                prediction = model(waveform_norm)
+                loss = weighted_temperature_loss(prediction, target, weights)
+                loss.backward()
+                optimizer.step()
+                total_loss += float(loss.detach().cpu())
+                total_mae_k += float((prediction.detach() - target).abs().mean().cpu()) * dataset.temperature_std_k
+                batches += 1
+            mean_loss = total_loss / max(batches, 1)
+            history.append({
+                "epoch": float(epoch + 1), "training_mode": "direct_point_field",
+                "mean_epoch_loss": mean_loss, "total_loss": mean_loss,
+                "field_loss": mean_loss, "temperature_mae_k": total_mae_k / max(batches, 1),
+                "acoustic_loss": 0.0, "temperature_loss": 0.0,
+                "smoothness_loss": 0.0, "physics_residual_loss": 0.0,
+            })
+        run_name = str(train_name or Path(checkpoint_name).stem).strip() or Path(checkpoint_name).stem
+        checkpoint_dir = self.config.train_checkpoint_root / run_name
+        report_dir = self.config.train_report_root / run_name
+        checkpoint_dir.mkdir(parents=True, exist_ok=True); report_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint_path = checkpoint_dir / checkpoint_name
+        config_dict = {key: (str(value) if isinstance(value, Path) else value)
+                       for key, value in asdict(self.config).items()}
+        training_summary = {
+            "training_seconds": float(time.perf_counter() - training_started),
+            "parameter_count": int(sum(parameter.numel() for parameter in model.parameters())),
+            "parameter_bytes": int(sum(parameter.numel() * parameter.element_size() for parameter in model.parameters())),
+            "device": str(self.device),
+        }
+        torch.save({
+            "checkpoint_version": 2,
+            "model_kind": "direct_point_field",
+            "model_state": model.state_dict(),
+            "config": config_dict,
+            "history": history,
+            "schema_version": int(dataset.schema_version),
+            "point_count": int(dataset.point_count),
+            "chunk_size": int(model.chunk_size),
+            "normalization": dict(dataset.normalization),
+            "sampling_metadata": dict(dataset.sampling_metadata),
+            "training_summary": training_summary,
+        }, checkpoint_path)
+        (report_dir / "training_summary.json").write_text(
+            json.dumps(training_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._save_history_artifacts(history, artifact_name=Path(checkpoint_name).stem, report_dir=report_dir)
+        return checkpoint_path
+
 
 def resolve_incremental_artifacts(
     config: AIModelConfig,
@@ -310,6 +389,9 @@ class OnlineUpdater:
         report_dir.mkdir(parents=True, exist_ok=True)
 
         dataset = AITemperatureDataset(manifest_path, config=self.config)
+        state = torch.load(base_checkpoint, map_location=self.device)
+        if dataset.is_point_field:
+            return self._update_point_field(dataset, state, base_checkpoint, output_path, report_dir, stamp)
         loader = DataLoader(dataset, batch_size=self.config.batch_size, shuffle=True)
         model = AIReconstructionModel(
             waveform_length=self.config.waveform_length,
@@ -321,7 +403,6 @@ class OnlineUpdater:
             fixed_weight_cnn=self.config.fixed_weight_cnn,
             fixed_weight_lstm=self.config.fixed_weight_lstm,
         ).to(self.device)
-        state = torch.load(base_checkpoint, map_location=self.device)
         model.load_state_dict(state["model_state"], strict=False)
         model.train()
         optimizer = torch.optim.Adam(model.parameters(), lr=self.config.learning_rate * 0.2)
@@ -392,4 +473,49 @@ class OnlineUpdater:
             artifact_name=stamp,
             report_dir=report_dir,
         )
+        return output_path
+
+    def _update_point_field(
+        self,
+        dataset: AITemperatureDataset,
+        state: dict,
+        base_checkpoint: Path,
+        output_path: Path,
+        report_dir: Path,
+        stamp: str,
+    ) -> Path:
+        if state.get("model_kind") != "direct_point_field" or int(state.get("checkpoint_version", 0)) != 2:
+            raise ValueError("固定节点增量训练需要 checkpoint_version=2 的 direct_point_field checkpoint")
+        if int(state.get("point_count", 0)) != dataset.point_count:
+            raise ValueError("固定节点增量训练的 checkpoint 与 manifest 点数不一致")
+        for key in ("mean_k", "std_k"):
+            if not np.isclose(float(state.get("normalization", {}).get(key, np.nan)),
+                              float(dataset.normalization.get(key, np.nan))):
+                raise ValueError(f"固定节点增量训练标准化参数不一致: {key}")
+        model = DirectPointFieldModel(dataset.point_count, hidden_dim=self.config.hidden_dim,
+                                      latent_dim=self.config.latent_dim,
+                                      chunk_size=int(state.get("chunk_size", 1000))).to(self.device)
+        model.load_state_dict(state["model_state"], strict=True); model.train()
+        loader = DataLoader(dataset, batch_size=self.config.batch_size, shuffle=True)
+        optimizer = torch.optim.Adam(model.parameters(), lr=self.config.learning_rate * 0.2)
+        history: list[dict[str, float | str]] = []
+        for epoch in tqdm(range(self.config.online_epochs), desc="incremental[direct_point_field]", unit="epoch"):
+            total = 0.0; batches = 0
+            for batch in loader:
+                waveform = batch["waveform"].to(self.device)
+                target = batch["field"].to(self.device)
+                weights = batch["sample_weights"].to(self.device)
+                optimizer.zero_grad(); waveform_norm, _, _ = prepare_model_waveform_input(waveform)
+                loss = weighted_temperature_loss(model(waveform_norm), target, weights)
+                loss.backward(); optimizer.step(); total += float(loss.detach().cpu()); batches += 1
+            value = total / max(batches, 1)
+            history.append({"epoch": float(epoch + 1), "training_mode": "direct_point_field",
+                            "mean_epoch_loss": value, "total_loss": value, "field_loss": value,
+                            "acoustic_loss": 0.0, "temperature_loss": 0.0,
+                            "smoothness_loss": 0.0, "physics_residual_loss": 0.0})
+        updated = dict(state)
+        updated.update({"model_state": model.state_dict(), "history": history,
+                        "base_checkpoint": str(base_checkpoint), "incremental_stamp": stamp})
+        torch.save(updated, output_path)
+        ReconstructionTrainer(self.config)._save_history_artifacts(history, artifact_name=stamp, report_dir=report_dir)
         return output_path

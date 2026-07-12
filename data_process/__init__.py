@@ -1,11 +1,14 @@
 """数据集、实验波形预处理与数据库 manifest 构建。"""
 
 from .builder import DataRecord, DatabaseBuilder
+from .case_pipeline import build_case_dataset, discover_cases
 from .dataset import (
     SPLIT_EXPERIMENT_POLICIES,
     AITemperatureDataset,
     split_manifest_file,
     split_manifest_records,
+    split_case_records,
+    write_case_split_files,
 )
 from .material_registry import (
     ensure_material_csv,
@@ -42,8 +45,12 @@ __all__ = [
     "SPLIT_EXPERIMENT_POLICIES",
     "DataRecord",
     "DatabaseBuilder",
+    "build_case_dataset",
+    "discover_cases",
     "split_manifest_file",
     "split_manifest_records",
+    "split_case_records",
+    "write_case_split_files",
     "ensure_material_csv",
     "load_material_to_idx",
     "material_csv_path",

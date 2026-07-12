@@ -1,0 +1,2 @@
+epoch,training_mode,mean_epoch_loss,total_loss,field_loss,temperature_mae_k,acoustic_loss,temperature_loss,smoothness_loss,physics_residual_loss
+1.0,direct_point_field,1.0028594732284546,1.0028594732284546,1.0028594732284546,279.4111569381288,0.0,0.0,0.0,0.0

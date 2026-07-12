@@ -9,6 +9,8 @@ from .config import AIModelConfig
 from .data_process import (
     SPLIT_EXPERIMENT_POLICIES,
     DatabaseBuilder,
+    build_case_dataset,
+    discover_cases,
     parse_preprocess_steps,
     split_manifest_file,
 )
@@ -529,13 +531,49 @@ def main() -> None:
         build_data_root.mkdir(parents=True, exist_ok=True)
         build_builder = DatabaseBuilder(config)
         build_builder.database_dir = build_data_root
+        experiment_source = _resolve_source_dir(config, args.experiment_dir)
+        canonical_case_source = config.data_root / "raw" / "calibration_sweep"
+        # Preserve the visible GUI default while transparently routing the known
+        # calibration case layout into the schema-v1 builder.
+        if str(args.experiment_dir).replace("\\", "/").strip("/") == "raw/10times" and discover_cases(canonical_case_source):
+            experiment_source = canonical_case_source
+        case_dirs = discover_cases(experiment_source) if experiment_source.exists() else []
+        if case_dirs and int(args.experiment_limit) != 0:
+            if not bool(args.skip_simulation) or str(args.external_sim_dir or "").strip():
+                raise ValueError("固定节点 case 数据不能与旧规则网格仿真 CSV 静默合并；请保持跳过内置/外部仿真")
+            build_data_root = config.data_root / "data_process" / f"{material_bucket}_case_temperature_field"
+            build_data_root.mkdir(parents=True, exist_ok=True)
+            combined = build_case_dataset(
+                experiment_source,
+                build_data_root,
+                target_points=10000,
+                seed=int(args.split_seed),
+                waveform_length=int(config.waveform_length),
+                limit=int(args.experiment_limit),
+                test_ratio=float(args.split_test_ratio),
+            )
+            split_config_path = build_data_root / "split_config.json"
+            split_payload = json.loads(split_config_path.read_text(encoding="utf-8"))
+            print(json.dumps({
+                "data_root": str(build_data_root),
+                "combined_manifest": str(combined),
+                "split": {
+                    "train_manifest": split_payload["manifests"]["train"],
+                    "validation_manifest": split_payload["manifests"]["validation"],
+                    "test_manifest": split_payload["manifests"]["test"],
+                    "split_stats": {k: split_payload[k] for k in ("seed", "ratios", "case_counts", "leakage")},
+                },
+                "split_config": str(split_config_path),
+                "dataset_schema_version": 1,
+            }, ensure_ascii=False, indent=2))
+            return
         manifest_list: list[Path] = []
         if not bool(args.skip_simulation):
             sim_manifest = build_builder.build_simulation_database(samples_per_material=args.sim_per_material)
             manifest_list.append(sim_manifest)
         if int(args.experiment_limit) != 0:
             exp_manifest = build_builder.import_experimental_csvs(
-                source_dir=_resolve_source_dir(config, args.experiment_dir),
+                source_dir=experiment_source,
                 material_key=args.experiment_material,
                 limit=args.experiment_limit,
             )
@@ -775,6 +813,29 @@ def main() -> None:
         return
 
     if args.command == "demo":
+        canonical_case_source = config.data_root / "raw" / "calibration_sweep"
+        if discover_cases(canonical_case_source):
+            _apply_preprocess_args(config, args)
+            build_data_root = config.data_root / "data_process" / "metal_matrix_case_temperature_field"
+            combined = build_case_dataset(
+                canonical_case_source, build_data_root, target_points=10000,
+                seed=int(args.split_seed), waveform_length=int(config.waveform_length),
+                limit=int(args.experiment_limit), test_ratio=float(args.split_test_ratio),
+            )
+            split_payload = json.loads((build_data_root / "split_config.json").read_text(encoding="utf-8"))
+            train_manifest_path = Path(split_payload["manifests"]["train"])
+            checkpoint = ReconstructionTrainer(config).train(train_manifest_path, train_name=args.train_name or None)
+            report = DatabaseBuilder(config).validate_requirement_33(combined)
+            print(json.dumps({
+                "data_root": str(build_data_root), "manifest": str(combined),
+                "checkpoint": str(checkpoint), "report": report,
+                "split": {"train_manifest": split_payload["manifests"]["train"],
+                          "validation_manifest": split_payload["manifests"]["validation"],
+                          "test_manifest": split_payload["manifests"]["test"]},
+                "split_config": str(build_data_root / "split_config.json"),
+                "dataset_schema_version": 1,
+            }, ensure_ascii=False, indent=2))
+            return
         material_bucket = _sanitize_material_label("metal_matrix")
         build_data_root = config.data_root / "data_process" / material_bucket
         build_data_root.mkdir(parents=True, exist_ok=True)

@@ -528,10 +528,14 @@ class BaseCommandTab(ttk.Frame):
 
     def _latest_split_config_path(self) -> Path | None:
         data_root = self._resolve_data_root_path()
-        root = data_root / "data_process"
-        if not root.exists():
-            return None
-        candidates = [p for p in root.glob("*/split_config.json") if p.is_file()]
+        candidates: list[Path] = []
+        processed_root = data_root / "data_process"
+        if processed_root.exists():
+            candidates.extend(p for p in processed_root.glob("*/split_config.json") if p.is_file())
+        # Compatibility for early schema-v1 artifacts created before build-db integration.
+        direct_case_config = data_root / "case_temperature_field" / "split_config.json"
+        if direct_case_config.is_file():
+            candidates.append(direct_case_config)
         if not candidates:
             return None
         candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)

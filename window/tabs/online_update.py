@@ -12,7 +12,9 @@ from ..rules import (
     available_dimensions,
     available_modes,
     default_rule_choices,
+    filter_rule_rows_for_model_kind,
     load_rule_rows,
+    manifest_model_kind,
     resolve_training_runtime_for_ui,
     unique_materials,
 )
@@ -34,7 +36,10 @@ class OnlineUpdateTab(BaseCommandTab):
     primary_button_text = "开始增量训练"
 
     def _refresh_rule_rows(self) -> None:
-        self._rule_rows = load_rule_rows(self._resolve_data_root_path())
+        rows = load_rule_rows(self._resolve_data_root_path())
+        manifest = self.resolve_latest_split_manifest("combined") or (self.manifest.get() if hasattr(self, "manifest") else "")
+        expected = manifest_model_kind(manifest, repo_root=self.repo_root) if manifest else "legacy_grid"
+        self._rule_rows = filter_rule_rows_for_model_kind(rows, expected)
         self._update_rule_material_options()
         self._update_rule_dimension_options()
         self._update_rule_mode_options()
@@ -191,17 +196,21 @@ class OnlineUpdateTab(BaseCommandTab):
         self._refresh_rule_rows()
 
     def validate_form(self) -> None:
-        if not self.manifest.get():
+        self._refresh_rule_rows()
+        if not (self.resolve_latest_split_manifest("combined") or self.manifest.get()):
             raise ValueError("请填写增量训练清单路径")
         if not self._selected_checkpoint_path():
             raise ValueError("当前规则组合未匹配到模型检查点，请先在训练页登记该组合")
 
     def compose_command(self) -> list[str]:
+        manifest = self.resolve_latest_split_manifest("combined") or self.manifest.get()
+        if manifest:
+            self.manifest.set(manifest)
         args: list[str] = [
             "online-update",
             *self.shared_io_root_args(),
             "--manifest",
-            self.manifest.get(),
+            manifest,
             "--checkpoint",
             self._selected_checkpoint_path(),
             "--rule-dimension",

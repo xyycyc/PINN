@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import csv
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import torch
 
 from ..config import AIModelConfig
 from ..model import (
@@ -133,6 +136,34 @@ def load_rule_rows(data_root: str | Path) -> list[dict[str, str]]:
 def unique_materials(rows: list[dict[str, str]]) -> list[str]:
     values = sorted({str(row.get("material", "")).strip() for row in rows if str(row.get("material", "")).strip()})
     return values
+
+
+def manifest_model_kind(manifest_path: str | Path, *, repo_root: str | Path) -> str:
+    path = Path(manifest_path)
+    if not path.is_absolute():
+        path = Path(repo_root) / path
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return "legacy_grid"
+    return "direct_point_field" if int(payload.get("schema_version", 0)) >= 1 and payload.get("sampling_index") else "legacy_grid"
+
+
+def filter_rule_rows_for_model_kind(rows: list[dict[str, str]], model_kind: str) -> list[dict[str, str]]:
+    """Keep only checkpoints compatible with the selected manifest representation."""
+    compatible: list[dict[str, str]] = []
+    for row in rows:
+        path = Path(str(row.get("parameter_path", "")))
+        if not path.is_file():
+            continue
+        try:
+            bundle = torch.load(path, map_location="cpu")
+            actual = str(bundle.get("model_kind", "legacy_grid")) if isinstance(bundle, dict) else "legacy_grid"
+        except Exception:
+            continue
+        if actual == model_kind:
+            compatible.append(row)
+    return compatible
 
 
 def available_dimensions(rows: list[dict[str, str]], *, material: str) -> list[str]:

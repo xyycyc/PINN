@@ -35,7 +35,9 @@ class ValidateTab(BaseCommandTab):
     def compose_command(self) -> list[str]:
         args: list[str] = ["validate"]
         args.extend(self.shared_io_root_args())
-        manifest = self.manifest.get()
+        manifest = self.resolve_latest_split_manifest("combined") or self.manifest.get()
+        if manifest:
+            self.manifest.set(manifest)
         if manifest:
             args.extend(["--manifest", manifest])
         return self.python_module_cmd("ai_model", *args)

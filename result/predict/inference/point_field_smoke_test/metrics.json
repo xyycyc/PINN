@@ -1,0 +1,36 @@
+{
+  "full_field": {
+    "mae_k": 252.5427119608561,
+    "rmse_k": 321.6889741393592,
+    "max_absolute_error_k": 557.7281799316406
+  },
+  "interface": {
+    "mae_k": 252.29083592392308,
+    "rmse_k": 321.4283530896509,
+    "max_absolute_error_k": 551.7574157714844
+  },
+  "material_1": {
+    "mae_k": 252.48098956298827,
+    "rmse_k": 321.62319692432135,
+    "max_absolute_error_k": 556.0995788574219
+  },
+  "material_2": {
+    "mae_k": 252.60443435872395,
+    "rmse_k": 321.75473790737834,
+    "max_absolute_error_k": 557.7281799316406
+  },
+  "samples": 3,
+  "point_count": 10000,
+  "model_kind": "direct_point_field",
+  "checkpoint_version": 2,
+  "high_temperature_threshold_k": 1021.9219360351562,
+  "high_temperature": {
+    "mae_k": 204.5353737121582,
+    "rmse_k": 205.19213833082415,
+    "max_absolute_error_k": 244.720947265625
+  },
+  "eval_total_seconds": 0.050278899987461045,
+  "eval_latency_ms_per_sample": 16.759633329153683,
+  "checkpoint": "ai_model\\result\\train\\checkpoint\\point_field_smoke\\smoke.pt",
+  "manifest": "ai_model\\database\\data_process\\metal_matrix_case_temperature_field\\test_manifest.json"
+}

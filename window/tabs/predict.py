@@ -13,7 +13,9 @@ from ..rules import (
     available_dimensions,
     available_modes,
     default_rule_choices,
+    filter_rule_rows_for_model_kind,
     load_rule_rows,
+    manifest_model_kind,
     unique_materials,
 )
 from ..widgets import PADX, PADY, FileEntry, LabeledCheck, LabeledCombobox, LabeledEntry, LabeledNumber, Section
@@ -31,7 +33,10 @@ class PredictTab(BaseCommandTab):
     settings_section = "predict"
 
     def _refresh_rule_rows(self) -> None:
-        self._rule_rows = load_rule_rows(self._resolve_data_root_path())
+        rows = load_rule_rows(self._resolve_data_root_path())
+        manifest = self.resolve_latest_split_manifest("test") or (self.manifest.get() if hasattr(self, "manifest") else "")
+        expected = manifest_model_kind(manifest, repo_root=self.repo_root) if manifest else "legacy_grid"
+        self._rule_rows = filter_rule_rows_for_model_kind(rows, expected)
         self._update_rule_material_options()
         self._update_rule_dimension_options()
         self._update_rule_mode_options()
@@ -234,6 +239,7 @@ class PredictTab(BaseCommandTab):
         self._refresh_rule_rows()
 
     def validate_form(self) -> None:
+        self._refresh_rule_rows()
         if not (self.resolve_latest_split_manifest("test") or self.manifest.get()):
             raise ValueError("请填写待预测清单路径")
         if not self._selected_checkpoint_path():

@@ -1,0 +1,14 @@
+[
+  {
+    "epoch": 1.0,
+    "training_mode": "direct_point_field",
+    "mean_epoch_loss": 1.0028594732284546,
+    "total_loss": 1.0028594732284546,
+    "field_loss": 1.0028594732284546,
+    "temperature_mae_k": 279.4111569381288,
+    "acoustic_loss": 0.0,
+    "temperature_loss": 0.0,
+    "smoothness_loss": 0.0,
+    "physics_residual_loss": 0.0
+  }
+]

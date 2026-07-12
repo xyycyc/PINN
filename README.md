@@ -1,3 +1,10 @@
+## 固定物理节点温度场改造
+
+- [GUI/CLI 兼容基线](docs/compatibility_baseline.md)
+- [温度场 schema v1](docs/temperature_field_schema.md)
+- [模型版本与迁移说明](docs/model_migration.md)
+- 真实 case 的审计、10,000 点采样索引、case 级划分和标签位于 `database/case_temperature_field/`。
+
 ## ai_model 数据目录规范（2026-05）
 
 当前版本将输入与输出统一锚定为两个可配置根目录：

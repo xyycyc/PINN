@@ -141,6 +141,94 @@ def split_manifest_file(
     return train_path, test_path, stats
 
 
+def split_case_records(records: list[dict[str, Any]], *, seed: int = 42,
+                       train_ratio: float = 0.7, validation_ratio: float = 0.15
+                       ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
+    """Deterministically split unique physical cases and reject derived-wave leakage."""
+    if not 0 < train_ratio < 1 or not 0 <= validation_ratio < 1 or train_ratio + validation_ratio >= 1:
+        raise ValueError("train_ratio/validation_ratio 无效")
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        case_key = str(record.get("case_key", "")).strip()
+        if not case_key:
+            raise ValueError("case 级划分要求每条记录包含 case_key")
+        groups.setdefault(case_key, []).append(record)
+    keys = np.array(sorted(groups), dtype=object)
+    np.random.default_rng(seed).shuffle(keys)
+    n = len(keys); n_train = int(round(n * train_ratio)); n_val = int(round(n * validation_ratio))
+    if n >= 3:
+        n_train = min(max(n_train, 1), n - 2); n_val = min(max(n_val, 1), n - n_train - 1)
+    key_sets = {"train": set(keys[:n_train]), "validation": set(keys[n_train:n_train+n_val]),
+                "test": set(keys[n_train+n_val:])}
+    result = {name: [item for key in sorted(values) for item in groups[str(key)]] for name, values in key_sets.items()}
+    intersections = {"train_validation": sorted(key_sets["train"] & key_sets["validation"]),
+                     "train_test": sorted(key_sets["train"] & key_sets["test"]),
+                     "validation_test": sorted(key_sets["validation"] & key_sets["test"])}
+    if any(intersections.values()):
+        raise RuntimeError(f"case 泄漏检查失败: {intersections}")
+    return result, {"split_version": 1, "seed": seed, "ratios": {"train": train_ratio,
+            "validation": validation_ratio, "test": 1-train_ratio-validation_ratio},
+            "case_counts": {k: len(v) for k, v in key_sets.items()}, "leakage": intersections}
+
+
+def write_case_split_files(manifest_path: str | Path, *, seed: int = 42,
+                           train_ratio: float = 0.7, validation_ratio: float = 0.15,
+                           train_name: str = "train_manifest.json",
+                           validation_name: str = "validation_manifest.json",
+                           test_name: str = "test_manifest.json") -> dict[str, Any]:
+    """Write case-level splits and fit temperature normalization on train only."""
+    manifest_path = Path(manifest_path)
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    splits, report = split_case_records(payload.get("records", []), seed=seed,
+                                         train_ratio=train_ratio, validation_ratio=validation_ratio)
+    train_values: list[np.ndarray] = []
+    for record in splits["train"]:
+        field_path = manifest_path.parent / str(record["field_path"])
+        with np.load(field_path, allow_pickle=False) as field:
+            train_values.append(np.asarray(field["temperature_k"], np.float64))
+    if not train_values:
+        raise ValueError("训练集为空，无法拟合温度标准化统计量")
+    values = np.concatenate(train_values)
+    normalization = {"version": 1, "fit_split": "train", "method": "dataset_train_zscore",
+                     "mean_k": float(values.mean()), "std_k": float(values.std()),
+                     "min_k": float(values.min()), "max_k": float(values.max()), "reversible": True}
+    names = {"train": train_name, "validation": validation_name, "test": test_name}
+    manifests: dict[str, str] = {"combined": str(manifest_path.resolve())}
+    distribution: dict[str, Any] = {}
+    combined_payload = dict(payload)
+    combined_payload["normalization"] = normalization
+    combined_payload["split"] = {"name": "combined", "version": 1, "seed": int(seed)}
+    manifest_path.write_text(json.dumps(combined_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    for split_name, records in splits.items():
+        split_temperatures: list[np.ndarray] = []
+        split_materials: set[int] = set()
+        interface_nodes = 0
+        for record in records:
+            with np.load(manifest_path.parent / str(record["field_path"]), allow_pickle=False) as field:
+                split_temperatures.append(np.asarray(field["temperature_k"], np.float64))
+                split_materials.update(int(v) for v in np.unique(field["material_ids"]))
+                interface_nodes = max(interface_nodes, int(np.sum(np.asarray(field["interface_side"]) > 0)))
+        joined = np.concatenate(split_temperatures) if split_temperatures else np.array([], dtype=np.float64)
+        distribution[split_name] = {
+            "case_count": len(records), "temperature_min_k": float(joined.min()) if joined.size else None,
+            "temperature_max_k": float(joined.max()) if joined.size else None,
+            "temperature_mean_k": float(joined.mean()) if joined.size else None,
+            "material_ids": sorted(split_materials), "interface_node_count_per_case": interface_nodes,
+        }
+        split_payload = dict(payload)
+        split_payload["dataset_name"] = f"{payload.get('dataset_name', 'case_temperature_field')}_{split_name}"
+        split_payload["normalization"] = normalization
+        split_payload["split"] = {"name": split_name, "version": 1, "seed": int(seed)}
+        split_payload["records"] = records
+        target = manifest_path.parent / names[split_name]
+        target.write_text(json.dumps(split_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        manifests[split_name] = str(target.resolve())
+    report = {**report, "normalization": normalization, "distribution": distribution, "manifests": manifests}
+    (manifest_path.parent / "split_config.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    return report
+
+
 class AITemperatureDataset(Dataset):
     def __init__(self, manifest_path: str | Path, config: AIModelConfig | None = None):
         manifest_path = Path(manifest_path)
@@ -148,6 +236,23 @@ class AITemperatureDataset(Dataset):
         self.config = config or AIModelConfig()
         self.root = manifest_path.parent
         self.records = data["records"]
+        self.schema_version = int(data.get("schema_version", 0))
+        self.is_point_field = self.schema_version >= 1 and bool(data.get("sampling_index"))
+        self.normalization = data.get("normalization", {}) if self.is_point_field else {}
+        self.temperature_mean_k = float(self.normalization.get("mean_k", 0.0))
+        self.temperature_std_k = float(self.normalization.get("std_k", 1.0))
+        if self.is_point_field:
+            if self.normalization.get("fit_split") != "train":
+                raise ValueError("固定节点 manifest 必须携带仅由训练集拟合的 normalization")
+            if self.temperature_std_k <= 0:
+                raise ValueError("固定节点温度标准差必须大于 0")
+            sampling_path = self.root / str(data["sampling_index"])
+            with np.load(sampling_path, allow_pickle=False) as sampling:
+                self.point_count = int(len(sampling["node_ids"]))
+                self.sampling_metadata = json.loads(str(sampling["metadata_json"].item()))
+        else:
+            self.point_count = 0
+            self.sampling_metadata = {}
         material_registry = ensure_material_csv(self.config.data_root)
         materials_in_manifest = sorted(
             {
@@ -208,11 +313,23 @@ class AITemperatureDataset(Dataset):
             smooth_window=self.smooth_window,
             use_cache=True,
         )
-        field = np.load(self.root / record["field_path"]).astype(np.float32)
-        field = self._resize_field(field)
+        if self.is_point_field:
+            with np.load(self.root / record["field_path"], allow_pickle=False) as payload:
+                field_k = np.asarray(payload["temperature_k"], np.float32)
+                coordinates_m = np.asarray(payload["coordinates_m"], np.float32)
+                node_ids = np.asarray(payload["node_ids"], np.int64)
+                mesh_material_ids = np.asarray(payload["material_ids"], np.int64)
+                interface_side = np.asarray(payload["interface_side"], np.int64)
+                sample_weights = np.asarray(payload["sample_weights"], np.float32)
+            if field_k.shape != (self.point_count,):
+                raise ValueError(f"{record.get('sample_id')} 温度场点数不一致: {field_k.shape}")
+            field = ((field_k - self.temperature_mean_k) / self.temperature_std_k).astype(np.float32)
+        else:
+            field = np.load(self.root / record["field_path"]).astype(np.float32)
+            field = self._resize_field(field)
 
         acoustic = record.get("acoustic", {})
-        if source == "experiment":
+        if source in {"experiment", "experiment_case"}:
             amplitude = float(np.max(np.abs(waveform)))
         else:
             amplitude = float(acoustic.get("amplitude", 0.0))
@@ -225,13 +342,13 @@ class AITemperatureDataset(Dataset):
             dtype=np.float32,
         )
 
-        return {
+        result = {
             "waveform": torch.from_numpy(waveform[None, :]),
             "field": torch.from_numpy(field),
             "temperature": torch.tensor([record["temperature_k"]], dtype=torch.float32),
             "acoustic": torch.from_numpy(acoustic_vec),
             # 实验样本通常没有完整温度场标签，只在仿真样本上监督 field。
-            "field_mask": torch.tensor([1.0 if source in {"simulation", "external_simulation"} else 0.0], dtype=torch.float32),
+            "field_mask": torch.tensor([1.0 if self.is_point_field or source in {"simulation", "external_simulation"} else 0.0], dtype=torch.float32),
             # 实验样本仅保留相对可靠的幅值监督，避免无效标签干扰训练。
             "acoustic_mask": torch.tensor(
                 [1.0, 1.0, 1.0] if source in {"simulation", "external_simulation"} else [0.0, 1.0, 0.0],
@@ -241,3 +358,13 @@ class AITemperatureDataset(Dataset):
             "dimension_id": torch.tensor(self.dimension_to_idx[record["dimension"]], dtype=torch.long),
             "mode_id": torch.tensor(self.mode_to_idx[record["mode"]], dtype=torch.long),
         }
+        if self.is_point_field:
+            result.update({
+                "field_k": torch.from_numpy(field_k),
+                "sample_weights": torch.from_numpy(sample_weights),
+                "coordinates_m": torch.from_numpy(coordinates_m),
+                "node_ids": torch.from_numpy(node_ids),
+                "mesh_material_ids": torch.from_numpy(mesh_material_ids),
+                "interface_side": torch.from_numpy(interface_side),
+            })
+        return result

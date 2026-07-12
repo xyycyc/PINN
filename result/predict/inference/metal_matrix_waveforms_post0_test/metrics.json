@@ -1,0 +1,31 @@
+{
+  "samples": 7,
+  "compute_loss": false,
+  "enable_plots": true,
+  "enable_benchmark": false,
+  "temperature_mae": 11.285347802298409,
+  "temperature_rmse": 15.511555491099543,
+  "temperature_max_error": 34.315216064453125,
+  "metrics_backend": "fortran",
+  "eval_total_seconds": 0.18528059998061508,
+  "eval_latency_ms_per_sample": 26.468657140087867,
+  "eval_throughput_samples_per_sec": 37.78053396163642,
+  "artifacts_dir": "D:\\Desktop\\code\\ai_model\\result\\predict\\inference\\metal_matrix_waveforms_post0_test",
+  "checkpoint": "ai_model\\result\\train\\checkpoint\\metal_matrix_waveforms_post0\\ai_model.pt",
+  "manifest": "ai_model\\database\\data_process\\metal_matrix_waveforms_post0\\test_manifest.json",
+  "inference_config": {
+    "hidden_dim": 128,
+    "latent_dim": 128,
+    "field_grid_2d": [
+      24,
+      24
+    ],
+    "learnable_branch_weights": false,
+    "fixed_weight_cnn": 0.75,
+    "fixed_weight_lstm": 0.75,
+    "preprocess_steps": "",
+    "clip_quantile": 1.0,
+    "smooth_window": 11,
+    "device": "cuda"
+  }
+}

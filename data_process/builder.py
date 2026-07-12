@@ -17,8 +17,7 @@ def _extract_temperature_from_name(file_name: str) -> float:
     match = re.search(r"[-+]?\d*\.?\d+", file_name)
     if not match:
         raise ValueError(f"无法从文件名中提取温度: {file_name}")
-    value = float(match.group())
-    return value if value > 273.15 else value + 273.15
+    return float(match.group())
 
 
 def _dlm_csv_skiprows(csv_path: Path) -> int:
@@ -308,7 +307,7 @@ class DatabaseBuilder:
         manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
         records = manifest.get("records", [])
         sim_records = [item for item in records if item.get("source") in {"simulation", "external_simulation"}]
-        exp_records = [item for item in records if item["source"] == "experiment"]
+        exp_records = [item for item in records if item.get("source") in {"experiment", "experiment_case"}]
         materials = sorted({item["material_key"] for item in records})
         temperatures: list[float] = []
         for item in records:
