@@ -11,6 +11,7 @@ import torch
 
 from ..config import AIModelConfig
 from .rule_registry import rule_csv_path
+from .trainer import MATERIAL_ROUTER_KIND
 
 
 @dataclass
@@ -23,6 +24,8 @@ class CleanupPlan:
     dependent_report_paths: dict[str, list[Path]] = field(default_factory=dict)
     predict_dirs: dict[str, list[Path]] = field(default_factory=dict)
     csv_rows_for_target: int = 0
+    material_router_paths: list[Path] = field(default_factory=list)
+    material_group_checkpoints: list[Path] = field(default_factory=list)
 
 
 @dataclass
@@ -85,6 +88,23 @@ def _resolve_optional(path_text: str) -> Path | None:
         return None
 
 
+def _require_checkpoint_root_path(
+    config: AIModelConfig,
+    path: str | Path,
+    *,
+    label: str,
+) -> Path:
+    """Reject cleanup targets that escape the configured checkpoint root."""
+
+    root = config.train_checkpoint_root.resolve()
+    candidate = Path(path).resolve()
+    if candidate == root or not candidate.is_relative_to(root):
+        raise ValueError(
+            f"{label} 不在当前输出根的 checkpoint 目录内，已拒绝清理: {candidate}"
+        )
+    return candidate
+
+
 def is_incremental_checkpoint(path: Path) -> bool:
     bundle = _load_bundle(path)
     return bool(bundle.get("base_checkpoint"))
@@ -101,7 +121,49 @@ def _infer_report_paths(config: AIModelConfig, checkpoint_path: Path) -> tuple[b
         return True, [report_root / "Incremental" / stamp], train_name
     stem = checkpoint_path.stem
     candidates = sorted(report_root.glob(f"{stem}_*"))
+    summary = report_root / "training_summary.json"
+    if summary.is_file():
+        candidates.append(summary)
     return False, candidates, train_name
+
+
+def _find_material_router_group(
+    config: AIModelConfig,
+    checkpoint_path: Path,
+) -> tuple[list[Path], list[Path]]:
+    """Return routers and all sample-material checkpoints in the same group."""
+
+    target = checkpoint_path.resolve()
+    root = config.train_checkpoint_root
+    if not root.is_dir():
+        return [], []
+    routers: list[Path] = []
+    checkpoints: set[Path] = set()
+    for router_path in root.rglob("*__material_router.json"):
+        try:
+            payload = json.loads(router_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if str(payload.get("router_kind", "")) != MATERIAL_ROUTER_KIND:
+            continue
+        material_checkpoints = payload.get("checkpoints", [])
+        if not isinstance(material_checkpoints, list):
+            continue
+        resolved_checkpoints: set[Path] = set()
+        for item in material_checkpoints:
+            if not isinstance(item, dict):
+                continue
+            raw = str(item.get("checkpoint", "")).strip()
+            if not raw:
+                continue
+            path = Path(raw)
+            resolved_checkpoints.add(
+                (path if path.is_absolute() else router_path.parent / path).resolve()
+            )
+        if target in resolved_checkpoints:
+            routers.append(router_path.resolve())
+            checkpoints.update(resolved_checkpoints)
+    return sorted(set(routers)), sorted(checkpoints)
 
 
 def _collect_predict_dirs(config: AIModelConfig, checkpoints: set[Path]) -> dict[str, list[Path]]:
@@ -157,10 +219,34 @@ def build_cleanup_plan(
     config.data_root = config.resolve_path(data_root)
     config.result_root = config.resolve_path(result_root)
 
-    target = Path(checkpoint_path).resolve()
+    target = _require_checkpoint_root_path(
+        config,
+        checkpoint_path,
+        label="目标 checkpoint",
+    )
     target_is_incremental, target_reports, target_train = _infer_report_paths(config, target)
-    dependents = find_incremental_dependents(config, target)
-    all_for_predict = {target, *dependents}
+    material_routers, material_group = _find_material_router_group(config, target)
+    group_checkpoints = set(material_group) or {target}
+    group_checkpoints = {
+        _require_checkpoint_root_path(config, path, label="分材料 checkpoint")
+        for path in group_checkpoints
+    }
+    material_routers = [
+        _require_checkpoint_root_path(config, path, label="材料路由文件")
+        for path in material_routers
+    ]
+    for group_checkpoint in group_checkpoints:
+        _is_incremental, reports, _train_name = _infer_report_paths(config, group_checkpoint)
+        target_reports.extend(reports)
+    target_reports = sorted(set(target_reports))
+    dependents = sorted(
+        {
+            dependent
+            for group_checkpoint in group_checkpoints
+            for dependent in find_incremental_dependents(config, group_checkpoint)
+        }
+    )
+    all_for_predict = {*group_checkpoints, *material_routers, *dependents}
     predict_dirs = _collect_predict_dirs(config, all_for_predict)
     dependent_reports = {
         str(dep): _infer_report_paths(config, dep)[1] for dep in dependents
@@ -171,7 +257,7 @@ def build_cleanup_plan(
     target_rows = 0
     for row in rows:
         row_path = _resolve_optional(str(row.get("parameter_path", "")))
-        if row_path == target:
+        if row_path in group_checkpoints:
             target_rows += 1
 
     return CleanupPlan(
@@ -183,6 +269,8 @@ def build_cleanup_plan(
         dependent_report_paths=dependent_reports,
         predict_dirs=predict_dirs,
         csv_rows_for_target=target_rows,
+        material_router_paths=material_routers,
+        material_group_checkpoints=sorted(group_checkpoints) if material_routers else [],
     )
 
 
@@ -321,7 +409,7 @@ def execute_cleanup(
             result.promoted_incrementals.append((dep, new_ckpt))
         rows = _load_rule_rows(csv_file)
 
-    checkpoints_to_remove = {plan.target_checkpoint}
+    checkpoints_to_remove = set(plan.material_group_checkpoints) or {plan.target_checkpoint}
     if include_dependents:
         checkpoints_to_remove.update(plan.dependent_incrementals)
 
@@ -331,8 +419,8 @@ def execute_cleanup(
             report_paths.extend(plan.dependent_report_paths.get(str(dep), []))
 
     predict_dirs: list[Path] = []
-    for ckpt in checkpoints_to_remove:
-        predict_dirs.extend(plan.predict_dirs.get(str(ckpt), []))
+    for model_source in {*checkpoints_to_remove, *plan.material_router_paths}:
+        predict_dirs.extend(plan.predict_dirs.get(str(model_source), []))
 
     for path in sorted(set(predict_dirs), key=lambda p: len(str(p)), reverse=True):
         if _safe_rmtree(path):
@@ -351,6 +439,11 @@ def execute_cleanup(
         _cleanup_empty_dirs(ckpt.parent, config.train_checkpoint_root)
         _cleanup_empty_dirs(config.train_report_root / ckpt.parent.name / "Incremental", config.train_report_root)
         _cleanup_empty_dirs(config.train_report_root / ckpt.parent.name, config.train_report_root)
+
+    for router_path in plan.material_router_paths:
+        if _safe_unlink(router_path):
+            result.removed_files.append(router_path)
+        _cleanup_empty_dirs(router_path.parent, config.train_checkpoint_root)
 
     filtered_rows: list[dict[str, str]] = []
     removed_rows = 0

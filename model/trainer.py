@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
+import copy
 from collections import defaultdict
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 import csv
 import time
@@ -13,14 +16,27 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
+from ..artifact_paths import normalize_pt_filename, validate_artifact_basename
 from ..config import AIModelConfig
-from ..data_process import AITemperatureDataset
+from ..data_process import (
+    AITemperatureDataset,
+    load_material_collection,
+    resolve_collection_manifest,
+)
 from .network import AIReconstructionModel
-from .point_field import DirectPointFieldModel, weighted_temperature_loss
+from .point_field import (
+    POINT_FIELD_CHECKPOINT_VERSION,
+    SUPPORTED_POINT_FIELD_CHECKPOINT_VERSIONS,
+    DirectPointFieldModel,
+    load_compatible_point_field_state,
+    weighted_temperature_loss,
+)
 from .rule_registry import default_training_time_stamp
 from .waveform_io import prepare_model_waveform_input
 
 _LEGACY_INCREMENTAL_CHECKPOINT_NAMES = frozenset({"ai_model_online.pt"})
+MATERIAL_ROUTER_KIND = "sample_material_checkpoints"
+MATERIAL_ROUTER_VERSION = 2
 
 try:
     import matplotlib.pyplot as plt
@@ -63,11 +79,15 @@ def _finite_difference_second_y(field: torch.Tensor) -> torch.Tensor:
 class ReconstructionTrainer:
     def __init__(self, config: AIModelConfig | None = None):
         self.config = config or AIModelConfig()
-        self.config.ensure_dirs()
+        if int(self.config.epochs) <= 0:
+            raise ValueError("epochs must be > 0")
+        if int(self.config.early_stopping_patience) <= 0:
+            raise ValueError("early_stopping_patience must be > 0")
         if self.config.training_mode not in {"normal", "residual_pinn"}:
             raise ValueError("training_mode must be `normal` or `residual_pinn`")
         if self.config.physics_residual_weight < 0:
             raise ValueError("physics_residual_weight must be >= 0")
+        self.config.ensure_dirs()
         self.device = _default_device(self.config)
 
     def build_model(self) -> AIReconstructionModel:
@@ -81,6 +101,37 @@ class ReconstructionTrainer:
             fixed_weight_cnn=self.config.fixed_weight_cnn,
             fixed_weight_lstm=self.config.fixed_weight_lstm,
         ).to(self.device)
+
+    @staticmethod
+    def _validate_dataset_pair(
+        train_dataset: AITemperatureDataset,
+        validation_dataset: AITemperatureDataset,
+    ) -> None:
+        if len(validation_dataset) == 0:
+            raise ValueError("validation manifest 没有记录")
+        if train_dataset.is_point_field != validation_dataset.is_point_field:
+            raise ValueError("train/validation manifest 的模型类型不一致")
+        if train_dataset.waveform_length != validation_dataset.waveform_length:
+            raise ValueError(
+                "train/validation 波形长度不一致: "
+                f"{train_dataset.waveform_length} != {validation_dataset.waveform_length}"
+            )
+        if not train_dataset.is_point_field:
+            return
+        if train_dataset.point_count != validation_dataset.point_count:
+            raise ValueError(
+                "train/validation 温度场点数不一致: "
+                f"{train_dataset.point_count} != {validation_dataset.point_count}"
+            )
+        for key in ("mean_k", "std_k"):
+            if not np.isclose(
+                float(train_dataset.normalization.get(key, np.nan)),
+                float(validation_dataset.normalization.get(key, np.nan)),
+            ):
+                raise ValueError(f"train/validation 温度标准化参数不一致: {key}")
+        for key in ("sampling_version", "source_mesh_fingerprint"):
+            if train_dataset.sampling_metadata.get(key) != validation_dataset.sampling_metadata.get(key):
+                raise ValueError(f"train/validation 固定节点采样定义不一致: {key}")
 
     def _loss(
         self,
@@ -163,6 +214,10 @@ class ReconstructionTrainer:
         for ax, (key, title) in zip(axes_flat, curve_keys):
             values = [float(item.get(key, 0.0)) for item in history]
             ax.plot(epochs, values, linewidth=1.2)
+            if key == "mean_epoch_loss" and any("validation_loss" in item for item in history):
+                validation_values = [float(item.get("validation_loss", float("nan"))) for item in history]
+                ax.plot(epochs, validation_values, linewidth=1.2, label="Validation Loss")
+                ax.legend()
             ax.set_title(title)
             ax.set_xlabel("Epoch")
             ax.set_ylabel(key)
@@ -175,16 +230,54 @@ class ReconstructionTrainer:
     def train(
         self,
         manifest_path: str | Path,
+        validation_manifest_path: str | Path | None = None,
         checkpoint_name: str = "ai_model.pt",
         train_name: str | None = None,
     ) -> Path:
+        checkpoint_name = normalize_pt_filename(
+            checkpoint_name,
+            label="checkpoint 文件名",
+        )
+        if train_name is not None:
+            train_name = validate_artifact_basename(
+                train_name,
+                label="训练任务名称",
+                allow_empty=True,
+            ) or None
         dataset = AITemperatureDataset(manifest_path, config=self.config)
+        if len(dataset) == 0:
+            raise ValueError(f"训练 manifest 没有记录: {manifest_path}")
+        validation_dataset = (
+            AITemperatureDataset(validation_manifest_path, config=self.config)
+            if validation_manifest_path is not None
+            else None
+        )
+        if validation_dataset is not None:
+            self._validate_dataset_pair(dataset, validation_dataset)
         if dataset.is_point_field:
-            return self._train_point_field(dataset, checkpoint_name=checkpoint_name, train_name=train_name)
+            return self._train_point_field(
+                dataset,
+                validation_dataset=validation_dataset,
+                train_manifest_path=manifest_path,
+                validation_manifest_path=validation_manifest_path,
+                checkpoint_name=checkpoint_name,
+                train_name=train_name,
+            )
         loader = DataLoader(dataset, batch_size=self.config.batch_size, shuffle=True)
+        validation_loader = (
+            DataLoader(validation_dataset, batch_size=self.config.batch_size, shuffle=False)
+            if validation_dataset is not None
+            else None
+        )
         model = self.build_model()
         optimizer = torch.optim.Adam(model.parameters(), lr=self.config.learning_rate)
         history: list[dict[str, float | str]] = []
+        best_validation_loss = float("inf")
+        best_epoch: int | None = None
+        best_model_state: dict[str, torch.Tensor] | None = None
+        epochs_without_improvement = 0
+        stopped_early = False
+        stopped_epoch: int | None = None
 
         epoch_bar = tqdm(
             range(self.config.epochs),
@@ -218,14 +311,52 @@ class ReconstructionTrainer:
             mean_stats["mean_epoch_loss"] = epoch_loss / max(batch_count, 1)
             # 与 mean_epoch_loss 语义一致，保留 total 命名便于外部统一读取。
             mean_stats["total_loss"] = mean_stats["mean_epoch_loss"]
+            if validation_loader is not None:
+                model.eval()
+                validation_total = 0.0
+                validation_samples = 0
+                with torch.no_grad():
+                    for validation_batch in validation_loader:
+                        validation_batch = {
+                            key: value.to(self.device) for key, value in validation_batch.items()
+                        }
+                        waveform_norm, _, _ = prepare_model_waveform_input(validation_batch["waveform"])
+                        validation_outputs = model(waveform=waveform_norm)
+                        validation_loss, _ = self._loss(validation_outputs, validation_batch)
+                        sample_count = int(validation_batch["waveform"].shape[0])
+                        validation_total += float(validation_loss.detach().cpu()) * sample_count
+                        validation_samples += sample_count
+                validation_mean = validation_total / max(validation_samples, 1)
+                mean_stats["validation_loss"] = validation_mean
+                if validation_mean < best_validation_loss:
+                    best_validation_loss = validation_mean
+                    best_epoch = epoch + 1
+                    best_model_state = copy.deepcopy(model.state_dict())
+                    epochs_without_improvement = 0
+                else:
+                    epochs_without_improvement += 1
+                    if epochs_without_improvement >= int(self.config.early_stopping_patience):
+                        stopped_early = True
+                        stopped_epoch = epoch + 1
             history.append(mean_stats)
             epoch_bar.set_postfix(
                 loss=f"{mean_stats['mean_epoch_loss']:.4f}",
+                val=(f"{mean_stats['validation_loss']:.4f}" if "validation_loss" in mean_stats else "-"),
                 field=f"{mean_stats['field_loss']:.4f}",
                 acoustic=f"{mean_stats['acoustic_loss']:.4f}",
                 temp=f"{mean_stats['temperature_loss']:.4f}",
                 phy=f"{mean_stats['physics_residual_loss']:.4f}",
             )
+            if stopped_early:
+                epoch_bar.write(
+                    "early stopping: validation loss did not improve for "
+                    f"{self.config.early_stopping_patience} consecutive epochs "
+                    f"(stopped at epoch {stopped_epoch}, best epoch {best_epoch})"
+                )
+                break
+
+        if best_model_state is not None:
+            model.load_state_dict(best_model_state, strict=True)
 
         run_name = str(train_name or Path(checkpoint_name).stem).strip()
         if not run_name:
@@ -244,6 +375,21 @@ class ReconstructionTrainer:
                 "model_state": model.state_dict(),
                 "config": config_dict,
                 "history": history,
+                "train_manifest": str(Path(manifest_path).resolve()),
+                "validation_manifest": (
+                    str(Path(validation_manifest_path).resolve())
+                    if validation_manifest_path is not None
+                    else None
+                ),
+                "best_epoch": best_epoch,
+                "best_validation_loss": (
+                    float(best_validation_loss) if best_epoch is not None else None
+                ),
+                "early_stopping_patience": int(self.config.early_stopping_patience),
+                "stopped_early": stopped_early,
+                "stopped_epoch": stopped_epoch,
+                "completed_epochs": len(history),
+                "requested_epochs": int(self.config.epochs),
             },
             checkpoint_path,
         )
@@ -258,20 +404,65 @@ class ReconstructionTrainer:
         self,
         dataset: AITemperatureDataset,
         *,
+        validation_dataset: AITemperatureDataset | None = None,
+        train_manifest_path: str | Path | None = None,
+        validation_manifest_path: str | Path | None = None,
         checkpoint_name: str,
         train_name: str | None,
+        sample_material: dict[str, object] | None = None,
     ) -> Path:
         """Train the versioned direct P-node model without changing legacy behavior."""
+        checkpoint_name = normalize_pt_filename(
+            checkpoint_name,
+            label="checkpoint 文件名",
+        )
+        if train_name is not None:
+            train_name = validate_artifact_basename(
+                train_name,
+                label="训练任务名称",
+                allow_empty=True,
+            ) or None
+        if self.config.training_mode != "normal":
+            raise ValueError(
+                "固定节点 direct_point_field 暂不支持 residual_pinn；"
+                "请将训练模式设为 normal"
+            )
         loader = DataLoader(dataset, batch_size=self.config.batch_size, shuffle=True)
+        validation_loader = (
+            DataLoader(validation_dataset, batch_size=self.config.batch_size, shuffle=False)
+            if validation_dataset is not None
+            else None
+        )
         model = DirectPointFieldModel(
-            point_count=dataset.point_count,
+            point_count=int(dataset.point_count),
             hidden_dim=self.config.hidden_dim,
             latent_dim=self.config.latent_dim,
+            learnable_branch_weights=self.config.learnable_branch_weights,
+            fixed_weight_cnn=self.config.fixed_weight_cnn,
+            fixed_weight_lstm=self.config.fixed_weight_lstm,
         ).to(self.device)
+
         optimizer = torch.optim.Adam(model.parameters(), lr=self.config.learning_rate)
         history: list[dict[str, float | str]] = []
+        best_validation_loss = float("inf")
+        best_validation_mae_k = float("inf")
+        best_epoch: int | None = None
+        best_model_state: dict[str, torch.Tensor] | None = None
+        epochs_without_improvement = 0
+        stopped_early = False
+        stopped_epoch: int | None = None
         training_started = time.perf_counter()
-        for epoch in tqdm(range(self.config.epochs), desc="train[direct_point_field]", unit="epoch"):
+        material_key = str((sample_material or {}).get("material_key", "")).strip()
+        material_label = str(
+            (sample_material or {}).get("material_name", material_key)
+        ).strip()
+        progress_label = (
+            f"train[sample-material:{material_key}]"
+            if sample_material is not None
+            else "train[direct_point_field]"
+        )
+        epoch_bar = tqdm(range(self.config.epochs), desc=progress_label, unit="epoch")
+        for epoch in epoch_bar:
             model.train()
             total_loss = 0.0
             total_mae_k = 0.0
@@ -290,13 +481,64 @@ class ReconstructionTrainer:
                 total_mae_k += float((prediction.detach() - target).abs().mean().cpu()) * dataset.temperature_std_k
                 batches += 1
             mean_loss = total_loss / max(batches, 1)
-            history.append({
+            epoch_stats: dict[str, float | str] = {
                 "epoch": float(epoch + 1), "training_mode": "direct_point_field",
                 "mean_epoch_loss": mean_loss, "total_loss": mean_loss,
                 "field_loss": mean_loss, "temperature_mae_k": total_mae_k / max(batches, 1),
                 "acoustic_loss": 0.0, "temperature_loss": 0.0,
                 "smoothness_loss": 0.0, "physics_residual_loss": 0.0,
-            })
+            }
+            if validation_loader is not None and validation_dataset is not None:
+                model.eval()
+                validation_loss_total = 0.0
+                validation_abs_error_total = 0.0
+                validation_samples = 0
+                validation_values = 0
+                with torch.no_grad():
+                    for validation_batch in validation_loader:
+                        waveform = validation_batch["waveform"].to(self.device)
+                        target = validation_batch["field"].to(self.device)
+                        weights = validation_batch["sample_weights"].to(self.device)
+                        waveform_norm, _, _ = prepare_model_waveform_input(waveform)
+                        prediction = model(waveform_norm)
+                        validation_loss = weighted_temperature_loss(prediction, target, weights)
+                        sample_count = int(waveform.shape[0])
+                        validation_loss_total += float(validation_loss.detach().cpu()) * sample_count
+                        validation_abs_error_total += float((prediction - target).abs().sum().detach().cpu())
+                        validation_samples += sample_count
+                        validation_values += int(target.numel())
+                validation_mean = validation_loss_total / max(validation_samples, 1)
+                validation_mae_k = (
+                    validation_abs_error_total / max(validation_values, 1)
+                    * validation_dataset.temperature_std_k
+                )
+                epoch_stats["validation_loss"] = validation_mean
+                epoch_stats["validation_temperature_mae_k"] = validation_mae_k
+                if validation_mean < best_validation_loss:
+                    best_validation_loss = validation_mean
+                    best_validation_mae_k = validation_mae_k
+                    best_epoch = epoch + 1
+                    best_model_state = copy.deepcopy(model.state_dict())
+                    epochs_without_improvement = 0
+                else:
+                    epochs_without_improvement += 1
+                    if epochs_without_improvement >= int(self.config.early_stopping_patience):
+                        stopped_early = True
+                        stopped_epoch = epoch + 1
+            history.append(epoch_stats)
+            epoch_bar.set_postfix(
+                loss=f"{mean_loss:.4f}",
+                val=(f"{epoch_stats['validation_loss']:.4f}" if "validation_loss" in epoch_stats else "-"),
+            )
+            if stopped_early:
+                epoch_bar.write(
+                    "early stopping: validation loss did not improve for "
+                    f"{self.config.early_stopping_patience} consecutive epochs "
+                    f"(stopped at epoch {stopped_epoch}, best epoch {best_epoch})"
+                )
+                break
+        if best_model_state is not None:
+            model.load_state_dict(best_model_state, strict=True)
         run_name = str(train_name or Path(checkpoint_name).stem).strip() or Path(checkpoint_name).stem
         checkpoint_dir = self.config.train_checkpoint_root / run_name
         report_dir = self.config.train_report_root / run_name
@@ -304,20 +546,57 @@ class ReconstructionTrainer:
         checkpoint_path = checkpoint_dir / checkpoint_name
         config_dict = {key: (str(value) if isinstance(value, Path) else value)
                        for key, value in asdict(self.config).items()}
+        config_dict["waveform_length"] = int(dataset.waveform_length)
         training_summary = {
             "training_seconds": float(time.perf_counter() - training_started),
             "parameter_count": int(sum(parameter.numel() for parameter in model.parameters())),
             "parameter_bytes": int(sum(parameter.numel() * parameter.element_size() for parameter in model.parameters())),
             "device": str(self.device),
+            "learnable_branch_weights": bool(model.learnable_branch_weights),
+            "branch_weight_cnn": float(model.weight_cnn.detach().cpu().item()),
+            "branch_weight_lstm": float(model.weight_lstm.detach().cpu().item()),
+            "train_samples": int(len(dataset)),
+            "validation_samples": int(len(validation_dataset)) if validation_dataset is not None else 0,
+            "best_epoch": best_epoch,
+            "best_validation_loss": float(best_validation_loss) if best_epoch is not None else None,
+            "best_validation_temperature_mae_k": (
+                float(best_validation_mae_k) if best_epoch is not None else None
+            ),
+            "early_stopping_patience": int(self.config.early_stopping_patience),
+            "stopped_early": stopped_early,
+            "stopped_epoch": stopped_epoch,
+            "completed_epochs": len(history),
+            "requested_epochs": int(self.config.epochs),
         }
+        if sample_material is not None:
+            training_summary.update(
+                {
+                    "sample_material_key": material_key,
+                    "sample_material_name": material_label,
+                    "point_count": int(dataset.point_count),
+                }
+            )
         torch.save({
-            "checkpoint_version": 2,
+            "checkpoint_version": POINT_FIELD_CHECKPOINT_VERSION,
             "model_kind": "direct_point_field",
             "model_state": model.state_dict(),
             "config": config_dict,
             "history": history,
+            "train_manifest": (
+                str(Path(train_manifest_path).resolve()) if train_manifest_path is not None else None
+            ),
+            "validation_manifest": (
+                str(Path(validation_manifest_path).resolve())
+                if validation_manifest_path is not None
+                else None
+            ),
             "schema_version": int(dataset.schema_version),
+            "waveform_length": int(dataset.waveform_length),
             "point_count": int(dataset.point_count),
+            "full_point_count": int(dataset.point_count),
+            "point_indices": None,
+            "sample_material_key": material_key or None,
+            "sample_material_name": material_label or None,
             "chunk_size": int(model.chunk_size),
             "normalization": dict(dataset.normalization),
             "sampling_metadata": dict(dataset.sampling_metadata),
@@ -328,6 +607,100 @@ class ReconstructionTrainer:
         self._save_history_artifacts(history, artifact_name=Path(checkpoint_name).stem, report_dir=report_dir)
         return checkpoint_path
 
+    def train_material_checkpoints(
+        self,
+        collection_path: str | Path,
+        checkpoint_name: str = "ai_model.pt",
+        train_name: str | None = None,
+    ) -> Path:
+        """Train one complete field checkpoint per sample-level material folder."""
+        collection_path = Path(collection_path).resolve()
+        collection = load_material_collection(collection_path)
+        checkpoint_name = normalize_pt_filename(
+            checkpoint_name or "ai_model.pt",
+            label="checkpoint 文件名",
+        )
+        base_checkpoint = Path(checkpoint_name)
+        suffix = base_checkpoint.suffix or ".pt"
+        stem = base_checkpoint.stem or "ai_model"
+        run_name = validate_artifact_basename(
+            str(train_name or stem),
+            label="训练任务名称",
+        )
+        checkpoints: list[dict[str, object]] = []
+        for raw_entry in collection["materials"]:
+            entry = dict(raw_entry)
+            material_key = str(entry["material_key"]).strip()
+            material_name = str(entry.get("material_name", material_key)).strip()
+            safe_key = re.sub(r"[^A-Za-z0-9_-]+", "_", material_key).strip("_")
+            if not safe_key:
+                raise ValueError(f"材料路由字段不能生成 checkpoint 文件名: {material_key!r}")
+            train_manifest = resolve_collection_manifest(
+                collection_path,
+                entry,
+                "train",
+            )
+            validation_manifest = resolve_collection_manifest(
+                collection_path,
+                entry,
+                "validation",
+            )
+            dataset = AITemperatureDataset(train_manifest, config=self.config)
+            validation_dataset = AITemperatureDataset(validation_manifest, config=self.config)
+            self._validate_dataset_pair(dataset, validation_dataset)
+            record_materials = {
+                str(record.get("material_key", "")).strip()
+                for record in dataset.records
+            }
+            if record_materials != {material_key}:
+                raise ValueError(
+                    f"材料 {material_key} 的训练清单包含其他材料: {sorted(record_materials)}"
+                )
+            if not dataset.is_point_field:
+                raise ValueError(
+                    f"材料 {material_key} 不是固定节点数据集，无法训练完整温度场 checkpoint"
+                )
+            material_checkpoint_name = f"{stem}__{safe_key}{suffix}"
+            checkpoint_path = self._train_point_field(
+                dataset,
+                validation_dataset=validation_dataset,
+                train_manifest_path=train_manifest,
+                validation_manifest_path=validation_manifest,
+                checkpoint_name=material_checkpoint_name,
+                train_name=run_name,
+                sample_material={
+                    "material_key": material_key,
+                    "material_name": material_name,
+                },
+            )
+            checkpoints.append(
+                {
+                    "material_key": material_key,
+                    "material_name": material_name,
+                    "rule_material": material_key,
+                    "point_count": int(dataset.point_count),
+                    "waveform_length": int(dataset.waveform_length),
+                    "train_manifest": str(train_manifest),
+                    "checkpoint": checkpoint_path.name,
+                }
+            )
+
+        checkpoint_dir = self.config.train_checkpoint_root / run_name
+        router_path = checkpoint_dir / f"{stem}__material_router.json"
+        router_payload = {
+            "router_version": MATERIAL_ROUTER_VERSION,
+            "router_kind": MATERIAL_ROUTER_KIND,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "source_collection": str(collection_path),
+            "dataset_label": str(collection.get("dataset_label", "")),
+            "routing_field": "records[].material_key",
+            "checkpoints": checkpoints,
+        }
+        router_path.write_text(
+            json.dumps(router_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return router_path
 
 def resolve_incremental_artifacts(
     config: AIModelConfig,
@@ -344,14 +717,15 @@ def resolve_incremental_artifacts(
 
     base_ckpt = Path(base_checkpoint_path).resolve()
     base_run_name = base_ckpt.parent.name
-    stamp = str(run_stamp or default_training_time_stamp()).strip() or default_training_time_stamp()
+    stamp = validate_artifact_basename(
+        str(run_stamp or default_training_time_stamp()),
+        label="增量训练时间戳",
+    )
     name = str(output_name or "").strip()
     if not name or name in _LEGACY_INCREMENTAL_CHECKPOINT_NAMES:
         checkpoint_name = f"{stamp}.pt"
-    elif name.endswith(".pt"):
-        checkpoint_name = name
     else:
-        checkpoint_name = f"{name}.pt"
+        checkpoint_name = normalize_pt_filename(name, label="增量 checkpoint 文件名")
 
     checkpoint_dir = config.train_checkpoint_root / base_run_name
     checkpoint_path = checkpoint_dir / checkpoint_name
@@ -364,6 +738,8 @@ class OnlineUpdater:
 
     def __init__(self, config: AIModelConfig | None = None):
         self.config = config or AIModelConfig()
+        if int(self.config.online_epochs) <= 0:
+            raise ValueError("online_epochs must be > 0")
         if self.config.training_mode not in {"normal", "residual_pinn"}:
             raise ValueError("training_mode must be `normal` or `residual_pinn`")
         if self.config.physics_residual_weight < 0:
@@ -389,6 +765,8 @@ class OnlineUpdater:
         report_dir.mkdir(parents=True, exist_ok=True)
 
         dataset = AITemperatureDataset(manifest_path, config=self.config)
+        if len(dataset) == 0:
+            raise ValueError(f"增量训练 manifest 没有记录: {manifest_path}")
         state = torch.load(base_checkpoint, map_location=self.device)
         if dataset.is_point_field:
             return self._update_point_field(dataset, state, base_checkpoint, output_path, report_dir, stamp)
@@ -484,18 +862,49 @@ class OnlineUpdater:
         report_dir: Path,
         stamp: str,
     ) -> Path:
-        if state.get("model_kind") != "direct_point_field" or int(state.get("checkpoint_version", 0)) != 2:
-            raise ValueError("固定节点增量训练需要 checkpoint_version=2 的 direct_point_field checkpoint")
+        checkpoint_version = int(state.get("checkpoint_version", 0))
+        if (
+            state.get("model_kind") != "direct_point_field"
+            or checkpoint_version not in SUPPORTED_POINT_FIELD_CHECKPOINT_VERSIONS
+        ):
+            raise ValueError(
+                "固定节点增量训练需要 direct_point_field checkpoint，"
+                f"支持版本 {SUPPORTED_POINT_FIELD_CHECKPOINT_VERSIONS}"
+            )
+        if self.config.training_mode != "normal":
+            raise ValueError(
+                "固定节点 direct_point_field 暂不支持 residual_pinn；"
+                "请将训练模式设为 normal"
+            )
         if int(state.get("point_count", 0)) != dataset.point_count:
             raise ValueError("固定节点增量训练的 checkpoint 与 manifest 点数不一致")
+        checkpoint_waveform_length = int(
+            state.get("waveform_length", state.get("config", {}).get("waveform_length", 0))
+        )
+        if checkpoint_waveform_length and checkpoint_waveform_length != dataset.waveform_length:
+            raise ValueError(
+                "固定节点增量训练的 checkpoint 与 manifest 波形长度不一致: "
+                f"{checkpoint_waveform_length} != {dataset.waveform_length}"
+            )
         for key in ("mean_k", "std_k"):
             if not np.isclose(float(state.get("normalization", {}).get(key, np.nan)),
                               float(dataset.normalization.get(key, np.nan))):
                 raise ValueError(f"固定节点增量训练标准化参数不一致: {key}")
-        model = DirectPointFieldModel(dataset.point_count, hidden_dim=self.config.hidden_dim,
-                                      latent_dim=self.config.latent_dim,
-                                      chunk_size=int(state.get("chunk_size", 1000))).to(self.device)
-        model.load_state_dict(state["model_state"], strict=True); model.train()
+        model = DirectPointFieldModel(
+            dataset.point_count,
+            hidden_dim=self.config.hidden_dim,
+            latent_dim=self.config.latent_dim,
+            chunk_size=int(state.get("chunk_size", 1000)),
+            learnable_branch_weights=self.config.learnable_branch_weights,
+            fixed_weight_cnn=self.config.fixed_weight_cnn,
+            fixed_weight_lstm=self.config.fixed_weight_lstm,
+        ).to(self.device)
+        legacy_missing = load_compatible_point_field_state(model, state["model_state"])
+        if not legacy_missing and not model.learnable_branch_weights:
+            with torch.no_grad():
+                model.weight_cnn.fill_(float(self.config.fixed_weight_cnn))
+                model.weight_lstm.fill_(float(self.config.fixed_weight_lstm))
+        model.train()
         loader = DataLoader(dataset, batch_size=self.config.batch_size, shuffle=True)
         optimizer = torch.optim.Adam(model.parameters(), lr=self.config.learning_rate * 0.2)
         history: list[dict[str, float | str]] = []
@@ -513,9 +922,23 @@ class OnlineUpdater:
                             "mean_epoch_loss": value, "total_loss": value, "field_loss": value,
                             "acoustic_loss": 0.0, "temperature_loss": 0.0,
                             "smoothness_loss": 0.0, "physics_residual_loss": 0.0})
+        config_dict = {
+            key: (str(value) if isinstance(value, Path) else value)
+            for key, value in asdict(self.config).items()
+        }
+        config_dict["waveform_length"] = int(dataset.waveform_length)
+        if legacy_missing and not model.learnable_branch_weights:
+            config_dict["fixed_weight_cnn"] = 1.0
+            config_dict["fixed_weight_lstm"] = 1.0
         updated = dict(state)
-        updated.update({"model_state": model.state_dict(), "history": history,
-                        "base_checkpoint": str(base_checkpoint), "incremental_stamp": stamp})
+        updated.update({
+            "checkpoint_version": POINT_FIELD_CHECKPOINT_VERSION,
+            "model_state": model.state_dict(),
+            "config": config_dict,
+            "history": history,
+            "base_checkpoint": str(base_checkpoint),
+            "incremental_stamp": stamp,
+        })
         torch.save(updated, output_path)
         ReconstructionTrainer(self.config)._save_history_artifacts(history, artifact_name=stamp, report_dir=report_dir)
         return output_path

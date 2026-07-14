@@ -11,7 +11,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
-TEMPERATURE_FIELD_SCHEMA_VERSION = 1
+TEMPERATURE_FIELD_SCHEMA_VERSION = 2
 SAMPLING_VERSION = "spatial-stratified-v2"
 CASE_RE = re.compile(r"^(case_\d+)_T(\d+p\d+)K$")
 
@@ -30,7 +30,30 @@ class CaseKey:
             raise ValueError(f"case 目录名无效: {path.name}")
         worker = path.parent.name
         if not worker.startswith("worker_"):
-            raise ValueError(f"case 缺少 worker 目录: {path}")
+            configs = sorted((path / "configs").glob("*_ultrasonic_config.json"))
+            if len(configs) != 1:
+                raise ValueError(
+                    "扁平 case 目录需要唯一 ultrasonic config 来恢复 worker，"
+                    f"实际找到 {len(configs)} 个: {path}"
+                )
+            try:
+                payload = json.loads(configs[0].read_text(encoding="utf-8"))
+                referenced = str(
+                    payload.get("config", {}).get("io", {}).get("temperature_csv_path", "")
+                ).replace("\\", "/")
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                raise ValueError(f"无法从扁平 case 配置恢复 worker: {configs[0]}") from exc
+            reference_match = re.search(
+                rf"(?:^|/)(worker_\d+)/({re.escape(path.name)})(?:/|$)",
+                referenced,
+                flags=re.IGNORECASE,
+            )
+            if reference_match is None:
+                raise ValueError(
+                    "扁平 case 的 temperature_csv_path 未包含匹配的 worker/case: "
+                    f"{referenced!r}"
+                )
+            worker = reference_match.group(1)
         return cls(worker, match.group(1), f"T{match.group(2)}K")
 
     @property

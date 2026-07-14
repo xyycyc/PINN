@@ -12,6 +12,8 @@ import argparse
 import json
 from pathlib import Path
 
+from .batch_test_modes import _resolve_project_path
+
 try:
     import matplotlib.pyplot as plt
 except ImportError:  # pragma: no cover
@@ -19,10 +21,17 @@ except ImportError:  # pragma: no cover
 
 
 def _discover_histories(run_dir: Path) -> dict[str, list[dict]]:
-    """匹配 batch_test 结构: <run_dir>/<mode>/outputs/reports/<mode>_history.json"""
+    """发现当前与历史 batch_test 目录中的训练历史。"""
+
     histories: dict[str, list[dict]] = {}
-    pattern = "*/outputs/reports/*_history.json"
-    for path in sorted(run_dir.glob(pattern)):
+    patterns = (
+        # Current AIModelConfig layout.
+        "*/result/train/report/*/*_history.json",
+        # Compatibility with batch runs produced by the former output layout.
+        "*/outputs/reports/*_history.json",
+    )
+    paths = [path for pattern in patterns for path in sorted(run_dir.glob(pattern))]
+    for path in paths:
         if not path.is_file():
             continue
         stem = path.stem
@@ -35,7 +44,9 @@ def _discover_histories(run_dir: Path) -> dict[str, list[dict]]:
             raise ValueError(f"无法解析 JSON: {path}") from e
         if not isinstance(data, list) or not data:
             continue
-        histories[mode_name] = data
+        # Current-layout files are visited first and take precedence if a
+        # partially migrated run contains both directory layouts.
+        histories.setdefault(mode_name, data)
     return histories
 
 
@@ -65,7 +76,7 @@ def plot_loss_curves(
     histories = _discover_histories(run_dir)
     if not histories:
         raise FileNotFoundError(
-            f"在 {run_dir} 下未找到 */outputs/reports/*_history.json，"
+            f"在 {run_dir} 下未找到训练历史（当前或历史 report 目录），"
             "请确认路径指向 batch_test_modes 生成的 run 目录。"
         )
 
@@ -127,8 +138,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = _build_parser().parse_args()
-    run_dir = Path(args.run_dir)
-    out = Path(args.output) if args.output else run_dir / "loss_curves.png"
+    run_dir = _resolve_project_path(args.run_dir)
+    out = _resolve_project_path(args.output) if args.output else run_dir / "loss_curves.png"
     path = plot_loss_curves(run_dir=run_dir, output_path=out, dpi=args.dpi)
     print(path)
 

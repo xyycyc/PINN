@@ -30,6 +30,7 @@ class AIModelConfig:
     batch_size: int = 16
     learning_rate: float = 1e-3
     epochs: int = 5000
+    early_stopping_patience: int = 10
     online_epochs: int = 5
     device: str = "cuda"
     min_simulation_samples: int = 1000
@@ -50,6 +51,8 @@ class AIModelConfig:
         path = Path(path_like)
         if path.is_absolute():
             return path
+        if path.parts and path.parts[0].casefold() == self.repo_root.name.casefold():
+            return (self.repo_root.parent / path).resolve()
         return self.repo_root / path
 
     @property

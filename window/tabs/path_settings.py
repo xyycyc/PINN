@@ -39,8 +39,12 @@ class PathSettingsTab(BaseCommandTab):
 
     def validate_form(self) -> None:
         cwd = str(self.launch_env["launch_root"].get()).strip()  # type: ignore[index]
-        if cwd and not Path(cwd).is_dir():
-            raise ValueError(f"子进程工作目录不存在或不是目录: {cwd}")
+        if cwd:
+            resolved = Path(cwd).expanduser()
+            if not resolved.is_absolute():
+                resolved = Path(self.repo_root) / resolved
+            if not resolved.is_dir():
+                raise ValueError(f"子进程工作目录不存在或不是目录: {resolved}")
 
     def _on_run(self) -> None:
         try:

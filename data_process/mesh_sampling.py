@@ -11,10 +11,55 @@ import pandas as pd
 
 from .temperature_field import SAMPLING_VERSION, mesh_fingerprint
 
-CSV_COLUMNS = ["node_id", "x", "y", "T", "thermal_material_id", "dup_target_surface"]
+CSV_COLUMNS = [
+    "node_id",
+    "x",
+    "y",
+    "T",
+    "thermal_material_id",
+    "thermal_material_name",
+    "dup_target_surface",
+]
 
 
-def read_mesh_csv(path: str | Path) -> dict[str, np.ndarray]:
+def _fallback_material_name(material_id: int) -> str:
+    return "unknown_material" if int(material_id) < 0 else f"material_{int(material_id)}"
+
+
+def _constituent_material_catalog(
+    frame: pd.DataFrame,
+    material_ids: np.ndarray,
+) -> list[dict[str, Any]]:
+    """Build the node-level constituent catalog from the thermal CSV.
+
+    These IDs describe layers/constituents inside one sample material.  They are
+    never sample-level material classes and must not be used for checkpoint
+    routing.
+    """
+    material_names = (
+        frame["thermal_material_name"].fillna("").astype(str).str.strip()
+        if "thermal_material_name" in frame
+        else pd.Series([""] * len(frame), index=frame.index, dtype=str)
+    )
+    catalog: list[dict[str, Any]] = []
+    for material_id in sorted(int(value) for value in np.unique(material_ids)):
+        mask = material_ids == material_id
+        names = sorted({value for value in material_names.loc[mask].tolist() if value})
+        if len(names) > 1:
+            raise ValueError(
+                f"thermal_material_id={material_id} 对应多个材料名称: {names}"
+            )
+        catalog.append(
+            {
+                "material_id": material_id,
+                "material_name": names[0] if names else _fallback_material_name(material_id),
+                "source_node_count": int(np.sum(mask)),
+            }
+        )
+    return catalog
+
+
+def read_mesh_csv(path: str | Path) -> dict[str, Any]:
     frame = pd.read_csv(path, usecols=lambda c: c in CSV_COLUMNS, low_memory=False)
     required = {"node_id", "x", "y", "T"}
     if not required.issubset(frame.columns):
@@ -34,6 +79,7 @@ def read_mesh_csv(path: str | Path) -> dict[str, np.ndarray]:
         "coordinates_m": coordinates,
         "temperature_k": frame["T"].to_numpy(np.float32),
         "material_ids": material,
+        "constituent_material_catalog": _constituent_material_catalog(frame, material),
         "interface_side": side,
     }
 
@@ -44,7 +90,7 @@ def _boundary_mask(xy: np.ndarray) -> np.ndarray:
     return np.any((np.abs(xy - lo) <= tol) | (np.abs(xy - hi) <= tol), axis=1)
 
 
-def deterministic_sample(mesh: dict[str, np.ndarray], target_points: int = 10000,
+def deterministic_sample(mesh: dict[str, Any], target_points: int = 10000,
                          seed: int = 42) -> dict[str, Any]:
     count = len(mesh["node_ids"])
     if not 1 <= target_points <= min(10000, count):
@@ -115,11 +161,29 @@ def deterministic_sample(mesh: dict[str, np.ndarray], target_points: int = 10000
     weights = (represented[inverse] / sample_counts[inverse]).astype(np.float32)
     weights /= weights.mean()
     fingerprint = mesh_fingerprint(mesh["node_ids"], xy, mesh["material_ids"], mesh["interface_side"])
+    constituent_material_catalog = []
+    for item in mesh.get("constituent_material_catalog", []):
+        entry = dict(item)
+        entry["sampled_point_count"] = int(
+            np.sum(mesh["material_ids"][indices] == int(entry["material_id"]))
+        )
+        constituent_material_catalog.append(entry)
+    if not constituent_material_catalog:
+        for material_id in sorted(int(value) for value in np.unique(mesh["material_ids"])):
+            constituent_material_catalog.append(
+                {
+                    "material_id": material_id,
+                    "material_name": _fallback_material_name(material_id),
+                    "source_node_count": int(np.sum(mesh["material_ids"] == material_id)),
+                    "sampled_point_count": int(np.sum(mesh["material_ids"][indices] == material_id)),
+                }
+            )
     return {
         "sampling_version": SAMPLING_VERSION, "source_mesh_fingerprint": fingerprint,
         "indices": indices, "node_ids": mesh["node_ids"][indices],
         "coordinates_m": xy[indices].astype(np.float32), "material_ids": mesh["material_ids"][indices],
         "interface_side": mesh["interface_side"][indices], "sample_weights": weights,
+        "constituent_material_catalog": constituent_material_catalog,
         "sampling_method": "mandatory-boundary-interface+material-grid-round-robin",
         "sampling_seed": int(seed),
     }

@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +65,8 @@ def resolve_data_root(data_root: str | Path) -> Path:
     root = Path(str(data_root).strip() or "database")
     if root.is_absolute():
         return root
+    if root.parts and root.parts[0].casefold() == _PACKAGE_ROOT.name.casefold():
+        return (_PACKAGE_ROOT.parent / root).resolve()
     return _PACKAGE_ROOT / root
 
 
@@ -89,20 +92,28 @@ def _repair_rule_csv_text(text: str) -> str | None:
     return "\n".join(repaired) + ("\n" if text.endswith("\n") else "")
 
 
-def sync_checkpoint_registry(data_root: str | Path) -> int:
+def sync_checkpoint_registry(
+    data_root: str | Path,
+    result_root: str | Path | None = None,
+) -> int:
     """将磁盘上未写入规则表的检查点补登记（含历史增量权重）。"""
 
     root = resolve_data_root(data_root)
     cfg = AIModelConfig()
     cfg.data_root = cfg.resolve_path(root)
+    if result_root is not None:
+        cfg.result_root = cfg.resolve_path(result_root)
     csv_path = ensure_rule_csv(cfg.data_root)
     added = discover_unregistered_checkpoints(csv_path, cfg.train_checkpoint_root)
     return len(added)
 
 
-def load_rule_rows(data_root: str | Path) -> list[dict[str, str]]:
+def load_rule_rows(
+    data_root: str | Path,
+    result_root: str | Path | None = None,
+) -> list[dict[str, str]]:
     try:
-        sync_checkpoint_registry(data_root)
+        sync_checkpoint_registry(data_root, result_root)
     except Exception:
         pass
 
@@ -138,15 +149,52 @@ def unique_materials(rows: list[dict[str, str]]) -> list[str]:
     return values
 
 
+def resolve_gui_project_path(path_value: str | Path, *, repo_root: str | Path) -> Path:
+    """Mirror the main CLI's cwd-independent project path compatibility."""
+
+    root = Path(repo_root).resolve()
+    path = Path(path_value).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+    if path.parts and path.parts[0].casefold() == root.name.casefold():
+        return (root.parent / path).resolve()
+    return (root / path).resolve()
+
+
 def manifest_model_kind(manifest_path: str | Path, *, repo_root: str | Path) -> str:
-    path = Path(manifest_path)
-    if not path.is_absolute():
-        path = Path(repo_root) / path
+    path = resolve_gui_project_path(manifest_path, repo_root=repo_root)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError):
         return "legacy_grid"
+    if payload.get("collection_kind") == "sample_material_dataset_collection":
+        return "material_collection"
     return "direct_point_field" if int(payload.get("schema_version", 0)) >= 1 and payload.get("sampling_index") else "legacy_grid"
+
+
+@lru_cache(maxsize=256)
+def _checkpoint_model_kind_cached(path_value: str, mtime_ns: int, size: int) -> str:
+    """Read only checkpoint metadata once per on-disk file revision.
+
+    ``mmap=True`` prevents model tensor storage from being copied merely to decide
+    which GUI rule list should display the checkpoint.  The stat fields are part
+    of the key so an overwritten checkpoint is inspected again automatically.
+    """
+
+    del mtime_ns, size  # Used only as cache-key revision markers.
+    try:
+        bundle = torch.load(path_value, map_location="cpu", mmap=True, weights_only=False)
+    except (TypeError, RuntimeError):
+        # PyTorch 2.0 and checkpoints written with the legacy serializer do not
+        # necessarily support mmap. Keep those installations/checkpoints visible.
+        bundle = torch.load(path_value, map_location="cpu", weights_only=False)
+    return str(bundle.get("model_kind", "legacy_grid")) if isinstance(bundle, dict) else "legacy_grid"
+
+
+def checkpoint_model_kind(checkpoint_path: str | Path) -> str:
+    path = Path(checkpoint_path).resolve()
+    stat = path.stat()
+    return _checkpoint_model_kind_cached(str(path), stat.st_mtime_ns, stat.st_size)
 
 
 def filter_rule_rows_for_model_kind(rows: list[dict[str, str]], model_kind: str) -> list[dict[str, str]]:
@@ -157,8 +205,7 @@ def filter_rule_rows_for_model_kind(rows: list[dict[str, str]], model_kind: str)
         if not path.is_file():
             continue
         try:
-            bundle = torch.load(path, map_location="cpu")
-            actual = str(bundle.get("model_kind", "legacy_grid")) if isinstance(bundle, dict) else "legacy_grid"
+            actual = checkpoint_model_kind(path)
         except Exception:
             continue
         if actual == model_kind:

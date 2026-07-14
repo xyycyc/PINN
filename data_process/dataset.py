@@ -8,6 +8,10 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from ..artifact_paths import (
+    validate_artifact_basename,
+    validate_distinct_artifact_basenames,
+)
 from ..config import AIModelConfig
 from .material_registry import ensure_material_csv, load_material_to_idx, register_materials
 from .preprocess import parse_preprocess_steps
@@ -18,6 +22,50 @@ SPLIT_EXPERIMENT_POLICIES: tuple[str, ...] = (
     "all_experiment_train",
     "all_experiment_test",
 )
+
+
+def latest_split_manifest(data_root: str | Path, kind: str) -> Path | None:
+    """Return the newest existing manifest referenced by a split config."""
+
+    if kind not in {"train", "validation", "test", "combined"}:
+        raise ValueError(f"不支持的 manifest 类型: {kind}")
+    root = Path(data_root)
+    candidates: list[Path] = []
+    processed_root = root / "data_process"
+    if processed_root.is_dir():
+        candidates.extend(
+            path for path in processed_root.rglob("split_config.json") if path.is_file()
+        )
+    direct_case = root / "case_temperature_field" / "split_config.json"
+    if direct_case.is_file():
+        candidates.append(direct_case)
+    dated_candidates: list[tuple[int, Path]] = []
+    for path in candidates:
+        try:
+            dated_candidates.append((path.stat().st_mtime_ns, path))
+        except OSError:
+            continue
+    dated_candidates.sort(key=lambda item: (item[0], str(item[1])), reverse=True)
+
+    for _mtime_ns, config_path in dated_candidates:
+        try:
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            manifests = payload.get("manifests", {})
+            raw = str(manifests.get(kind, "") if isinstance(manifests, dict) else "").strip()
+            if not raw:
+                continue
+            manifest = Path(raw)
+            if not manifest.is_absolute():
+                manifest = config_path.parent / manifest
+            if manifest.is_file():
+                manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
+                records = manifest_payload.get("records", [])
+                if not isinstance(records, list) or not records:
+                    continue
+                return manifest.resolve()
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+    return None
 
 
 def _split_indices(count: int, test_ratio: float, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
@@ -128,8 +176,21 @@ def split_manifest_file(
         experiment_policy=experiment_policy,
     )
 
-    train_name = str(train_output_name).strip() or "train_manifest.json"
-    test_name = str(test_output_name).strip() or "test_manifest.json"
+    train_name = validate_artifact_basename(
+        str(train_output_name).strip() or "train_manifest.json",
+        label="训练 manifest 文件名",
+        suffix=".json",
+    )
+    test_name = validate_artifact_basename(
+        str(test_output_name).strip() or "test_manifest.json",
+        label="测试 manifest 文件名",
+        suffix=".json",
+    )
+    validate_distinct_artifact_basenames(
+        (train_name, test_name),
+        label="训练/测试 manifest 文件名",
+        reserved=(manifest_path.name, "split_config.json"),
+    )
     train_path = manifest_path.parent / train_name
     test_path = manifest_path.parent / test_name
 
@@ -157,7 +218,12 @@ def split_case_records(records: list[dict[str, Any]], *, seed: int = 42,
     np.random.default_rng(seed).shuffle(keys)
     n = len(keys); n_train = int(round(n * train_ratio)); n_val = int(round(n * validation_ratio))
     if n >= 3:
-        n_train = min(max(n_train, 1), n - 2); n_val = min(max(n_val, 1), n - n_train - 1)
+        minimum_validation = 1 if validation_ratio > 0 else 0
+        n_train = min(max(n_train, 1), n - 1 - minimum_validation)
+        n_val = min(
+            max(n_val, minimum_validation),
+            n - n_train - 1,
+        )
     key_sets = {"train": set(keys[:n_train]), "validation": set(keys[n_train:n_train+n_val]),
                 "test": set(keys[n_train+n_val:])}
     result = {name: [item for key in sorted(values) for item in groups[str(key)]] for name, values in key_sets.items()}
@@ -178,6 +244,26 @@ def write_case_split_files(manifest_path: str | Path, *, seed: int = 42,
                            test_name: str = "test_manifest.json") -> dict[str, Any]:
     """Write case-level splits and fit temperature normalization on train only."""
     manifest_path = Path(manifest_path)
+    train_name = validate_artifact_basename(
+        train_name,
+        label="训练 manifest 文件名",
+        suffix=".json",
+    )
+    validation_name = validate_artifact_basename(
+        validation_name,
+        label="验证 manifest 文件名",
+        suffix=".json",
+    )
+    test_name = validate_artifact_basename(
+        test_name,
+        label="测试 manifest 文件名",
+        suffix=".json",
+    )
+    validate_distinct_artifact_basenames(
+        (train_name, validation_name, test_name),
+        label="训练/验证/测试 manifest 文件名",
+        reserved=(manifest_path.name, "split_config.json"),
+    )
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     splits, report = split_case_records(payload.get("records", []), seed=seed,
                                          train_ratio=train_ratio, validation_ratio=validation_ratio)
@@ -201,19 +287,22 @@ def write_case_split_files(manifest_path: str | Path, *, seed: int = 42,
     manifest_path.write_text(json.dumps(combined_payload, ensure_ascii=False, indent=2), encoding="utf-8")
     for split_name, records in splits.items():
         split_temperatures: list[np.ndarray] = []
-        split_materials: set[int] = set()
+        split_constituent_materials: set[int] = set()
         interface_nodes = 0
         for record in records:
             with np.load(manifest_path.parent / str(record["field_path"]), allow_pickle=False) as field:
                 split_temperatures.append(np.asarray(field["temperature_k"], np.float64))
-                split_materials.update(int(v) for v in np.unique(field["material_ids"]))
+                split_constituent_materials.update(
+                    int(v) for v in np.unique(field["material_ids"])
+                )
                 interface_nodes = max(interface_nodes, int(np.sum(np.asarray(field["interface_side"]) > 0)))
         joined = np.concatenate(split_temperatures) if split_temperatures else np.array([], dtype=np.float64)
         distribution[split_name] = {
             "case_count": len(records), "temperature_min_k": float(joined.min()) if joined.size else None,
             "temperature_max_k": float(joined.max()) if joined.size else None,
             "temperature_mean_k": float(joined.mean()) if joined.size else None,
-            "material_ids": sorted(split_materials), "interface_node_count_per_case": interface_nodes,
+            "constituent_material_ids": sorted(split_constituent_materials),
+            "interface_node_count_per_case": interface_nodes,
         }
         split_payload = dict(payload)
         split_payload["dataset_name"] = f"{payload.get('dataset_name', 'case_temperature_field')}_{split_name}"
@@ -236,6 +325,13 @@ class AITemperatureDataset(Dataset):
         self.config = config or AIModelConfig()
         self.root = manifest_path.parent
         self.records = data["records"]
+        waveform_lengths = {
+            int(np.load(self.root / record["waveform_path"], mmap_mode="r").shape[-1])
+            for record in self.records
+        }
+        if len(waveform_lengths) > 1:
+            raise ValueError(f"manifest contains inconsistent waveform lengths: {sorted(waveform_lengths)}")
+        self.waveform_length = next(iter(waveform_lengths), 0)
         self.schema_version = int(data.get("schema_version", 0))
         self.is_point_field = self.schema_version >= 1 and bool(data.get("sampling_index"))
         self.normalization = data.get("normalization", {}) if self.is_point_field else {}
@@ -249,10 +345,26 @@ class AITemperatureDataset(Dataset):
             sampling_path = self.root / str(data["sampling_index"])
             with np.load(sampling_path, allow_pickle=False) as sampling:
                 self.point_count = int(len(sampling["node_ids"]))
+                self.constituent_material_ids = np.asarray(sampling["material_ids"], np.int64)
                 self.sampling_metadata = json.loads(str(sampling["metadata_json"].item()))
+            self.constituent_material_catalog = [
+                dict(item)
+                for item in data.get(
+                    "constituent_material_catalog",
+                    self.sampling_metadata.get(
+                        "constituent_material_catalog",
+                        # Schema-v1 compatibility: this catalog was always
+                        # node-level even though its old name was ambiguous.
+                        self.sampling_metadata.get("material_catalog", []),
+                    ),
+                )
+                if isinstance(item, dict)
+            ]
         else:
             self.point_count = 0
+            self.constituent_material_ids = np.array([], dtype=np.int64)
             self.sampling_metadata = {}
+            self.constituent_material_catalog = []
         material_registry = ensure_material_csv(self.config.data_root)
         materials_in_manifest = sorted(
             {
@@ -261,6 +373,8 @@ class AITemperatureDataset(Dataset):
                 if str(item.get("material_key", "")).strip()
             }
         )
+        # Only record-level sample materials participate in training/routing.
+        # Internal layer/constituent names must never enter material.csv.
         register_materials(material_registry, materials_in_manifest, source="manifest")
         self.material_to_idx = load_material_to_idx(material_registry)
         if not self.material_to_idx:

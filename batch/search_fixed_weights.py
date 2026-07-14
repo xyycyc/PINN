@@ -14,6 +14,7 @@ from .batch_test_modes import (
     _build_base_config,
     _collect_mse_records,
     _evaluate_on_manifest,
+    _resolve_project_path,
     _split_train_test,
     _to_jsonable_dict,
     _write_manifest,
@@ -44,7 +45,6 @@ def _write_search_outputs(
     training_mode: str,
     physics_residual_weight: float,
     network_weights: list[float],
-    physical_weights: list[float],
     summary_rows: list[dict[str, Any]],
 ) -> None:
     if not summary_rows:
@@ -71,8 +71,9 @@ def _write_search_outputs(
         "search_space": {
             "training_mode": training_mode,
             "physics_residual_weight": physics_residual_weight,
-            "network_weights": network_weights,
-            "physical_weights": physical_weights,
+            "cnn_weights": network_weights,
+            "lstm_weights": network_weights,
+            "combination": "cartesian_product",
         },
         "completed_cases": len(ordered_rows),
         "summary": ordered_rows,
@@ -88,18 +89,15 @@ def _build_search_config(
     seed: int,
     training_mode: str,
     physics_residual_weight: float,
-    network_weight: float,
-    physical_weight: float,
+    cnn_weight: float,
+    lstm_weight: float,
 ) -> AIModelConfig:
     cfg = _build_base_config(run_dir, device=device, epochs=epochs, seed=seed)
     cfg.training_mode = training_mode
     cfg.learnable_branch_weights = False
     cfg.physics_residual_weight = physics_residual_weight
-    cfg.fixed_weight_cnn = network_weight
-    cfg.fixed_weight_lstm = network_weight
-    cfg.fixed_weight_material = physical_weight
-    cfg.fixed_weight_dimension = physical_weight
-    cfg.fixed_weight_mode = physical_weight
+    cfg.fixed_weight_cnn = cnn_weight
+    cfg.fixed_weight_lstm = lstm_weight
     cfg.ensure_dirs()
     return cfg
 
@@ -119,6 +117,15 @@ def run_fixed_weight_search(
     clip_quantile: float = 1.0,
     smooth_window: int = 11,
 ) -> Path:
+    unsupported = [value for value in physical_weights if abs(float(value) - 1.0) > 1e-12]
+    if unsupported:
+        raise ValueError(
+            "当前 AIReconstructionModel 只有 CNN/LSTM 两个可加权分支；"
+            "physical_weights 是旧版无效搜索维度，请使用 1.0"
+        )
+    network_weights = list(dict.fromkeys(float(value) for value in network_weights))
+    if not network_weights:
+        raise ValueError("network_weights 不能为空")
     run_name = datetime.now().strftime("fixed_weight_search_%Y%m%d_%H%M%S")
     run_dir = result_root / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -144,9 +151,9 @@ def run_fixed_weight_search(
     _write_manifest(test_manifest, "mse_test_split", test_records)
 
     summary_rows: list[dict[str, Any]] = []
-    for network_weight in network_weights:
-        for physical_weight in physical_weights:
-            case_name = f"nw_{network_weight:g}_pw_{physical_weight:g}"
+    for cnn_weight in network_weights:
+        for lstm_weight in network_weights:
+            case_name = f"cnn_{cnn_weight:g}_lstm_{lstm_weight:g}"
             case_dir = run_dir / case_name
             cfg = _build_search_config(
                 case_dir,
@@ -155,8 +162,8 @@ def run_fixed_weight_search(
                 seed=seed,
                 training_mode=training_mode,
                 physics_residual_weight=physics_residual_weight,
-                network_weight=network_weight,
-                physical_weight=physical_weight,
+                cnn_weight=cnn_weight,
+                lstm_weight=lstm_weight,
             )
             cfg.preprocess_steps = base_cfg.preprocess_steps
             cfg.clip_quantile = base_cfg.clip_quantile
@@ -174,8 +181,8 @@ def run_fixed_weight_search(
                 "training_mode": cfg.training_mode,
                 "learnable_branch_weights": cfg.learnable_branch_weights,
                 "physics_residual_weight": cfg.physics_residual_weight,
-                "network_weight": network_weight,
-                "physical_weight": physical_weight,
+                "fixed_weight_cnn": cnn_weight,
+                "fixed_weight_lstm": lstm_weight,
                 "train_seconds": train_seconds,
                 "checkpoint": str(checkpoint),
                 **test_metrics,
@@ -193,7 +200,6 @@ def run_fixed_weight_search(
                 training_mode=training_mode,
                 physics_residual_weight=physics_residual_weight,
                 network_weights=network_weights,
-                physical_weights=physical_weights,
                 summary_rows=summary_rows,
             )
 
@@ -209,14 +215,13 @@ def run_fixed_weight_search(
         training_mode=training_mode,
         physics_residual_weight=physics_residual_weight,
         network_weights=network_weights,
-        physical_weights=physical_weights,
         summary_rows=summary_rows,
     )
     return run_dir
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="搜索 ai_model fixed 模式下的网络/物性分支权重")
+    parser = argparse.ArgumentParser(description="搜索 ai_model fixed 模式下的 CNN/LSTM 分支权重")
     parser.add_argument("--data-root", type=str, default="database/raw")
     parser.add_argument("--result-root", type=str, default="result")
     parser.add_argument("--test-ratio", type=float, default=0.2)
@@ -225,13 +230,23 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--training-mode", type=str, default="residual_pinn", choices=("normal", "residual_pinn"))
     parser.add_argument("--physics-residual-weight", type=float, default=0.1)
-    parser.add_argument("--network-weights", type=str, default="0.75,1.0,1.25")
-    parser.add_argument("--physical-weights", type=str, default="1.0,2.0,3.0")
+    parser.add_argument(
+        "--network-weights",
+        type=str,
+        default="0.75,1.0,1.25",
+        help="CNN 与 LSTM 共用候选值列表；执行二者的笛卡尔积搜索",
+    )
+    parser.add_argument(
+        "--physical-weights",
+        type=str,
+        default="1.0",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument(
         "--preprocess",
         type=str,
         default="",
-        help="实验波形预处理流水线，逗号分隔: clip,smooth,detrend,robust_norm,zscore",
+        help="实验波形预处理流水线，逗号分隔: clip,smooth,detrend,robust_norm",
     )
     parser.add_argument("--clip-quantile", type=float, default=1.0)
     parser.add_argument("--smooth-window", type=int, default=11)
@@ -240,8 +255,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = _build_parser().parse_args()
-    data_root = Path(args.data_root)
-    result_root = Path(args.result_root)
+    data_root = _resolve_project_path(args.data_root)
+    result_root = _resolve_project_path(args.result_root)
     if not data_root.exists():
         raise FileNotFoundError(f"数据目录不存在: {data_root}")
     if not (0.0 < args.test_ratio < 1.0):

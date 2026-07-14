@@ -9,7 +9,7 @@ from __future__ import annotations
 import tkinter as tk
 from collections.abc import Callable, Iterable
 from pathlib import Path
-from tkinter import filedialog, ttk
+from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
 
@@ -246,6 +246,157 @@ class FileEntry(FormRow):
 
     def set(self, value: str) -> None:
         self.var.set(str(value))
+
+
+class MaterialSplitEditor(ttk.Frame):
+    """Dynamic per-folder train/validation/test ratio editor."""
+
+    def __init__(
+        self,
+        master: tk.Misc,
+        *,
+        source_getter: Callable[[], str],
+        source_resolver: Callable[[str], Path],
+        initial: Any = None,
+    ) -> None:
+        super().__init__(master)
+        self._source_getter = source_getter
+        self._source_resolver = source_resolver
+        self._initial = self._normalize_initial(initial)
+        self._rows: dict[str, tuple[tk.StringVar, tk.StringVar, tk.StringVar]] = {}
+
+        top = ttk.Frame(self)
+        top.pack(fill="x")
+        ttk.Button(top, text="扫描/刷新材料文件夹", command=self.refresh_with_message).pack(
+            side="left"
+        )
+        self.status = ttk.Label(
+            top,
+            text="开启多材料输入后，扫描所选上层目录的直接子文件夹。",
+            foreground="#666",
+        )
+        self.status.pack(side="left", padx=(PADX, 0))
+        self.table = ttk.Frame(self)
+        self.table.pack(fill="x", pady=(PADY, 0))
+        self._render_headers()
+
+    @staticmethod
+    def _normalize_initial(value: Any) -> dict[str, tuple[float, float, float]]:
+        result: dict[str, tuple[float, float, float]] = {}
+        if isinstance(value, dict):
+            items = value.items()
+        elif isinstance(value, list):
+            items = []
+            for item in value:
+                if not isinstance(item, str):
+                    continue
+                key, separator, ratios = item.partition("=")
+                if separator:
+                    items.append((key, ratios.split(",")))
+        else:
+            items = []
+        for key, raw in items:
+            try:
+                if isinstance(raw, dict):
+                    values = (raw["train"], raw["validation"], raw["test"])
+                else:
+                    values = tuple(raw)
+                if len(values) == 3:
+                    result[str(key)] = tuple(float(item) for item in values)  # type: ignore[assignment]
+            except (KeyError, TypeError, ValueError):
+                continue
+        return result
+
+    def _render_headers(self) -> None:
+        for column, text in enumerate(("材料文件夹/路由字段", "训练", "验证", "测试")):
+            ttk.Label(self.table, text=text).grid(
+                row=0,
+                column=column,
+                sticky="w",
+                padx=(0, PADX),
+                pady=(0, PADY),
+            )
+        self.table.columnconfigure(0, weight=1)
+
+    def refresh(self) -> None:
+        from ..data_process import discover_material_roots
+
+        source = self._source_getter().strip()
+        if not source:
+            raise ValueError("请先选择多材料上层目录。")
+        roots = discover_material_roots(self._source_resolver(source))
+        previous = self.as_dict(validate=False)
+        for child in self.table.winfo_children():
+            child.destroy()
+        self._render_headers()
+        self._rows.clear()
+        for row_index, material_key in enumerate(roots, start=1):
+            values = previous.get(
+                material_key,
+                self._initial.get(material_key, (0.7, 0.1, 0.2)),
+            )
+            variables = tuple(tk.StringVar(value=str(value)) for value in values)
+            self._rows[material_key] = variables  # type: ignore[assignment]
+            ttk.Label(self.table, text=material_key).grid(
+                row=row_index,
+                column=0,
+                sticky="w",
+                padx=(0, PADX),
+                pady=2,
+            )
+            for column, variable in enumerate(variables, start=1):
+                ttk.Entry(self.table, textvariable=variable, width=10).grid(
+                    row=row_index,
+                    column=column,
+                    sticky="w",
+                    padx=(0, PADX),
+                    pady=2,
+                )
+        self.status.configure(text=f"已识别 {len(self._rows)} 种样本材料。")
+
+    def refresh_with_message(self) -> None:
+        try:
+            self.refresh()
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("扫描材料目录失败", str(exc), parent=self.winfo_toplevel())
+
+    def as_dict(self, *, validate: bool = True) -> dict[str, tuple[float, float, float]]:
+        result: dict[str, tuple[float, float, float]] = {}
+        for material_key, variables in self._rows.items():
+            try:
+                values = tuple(float(variable.get().strip()) for variable in variables)
+            except ValueError as exc:
+                if not validate:
+                    continue
+                raise ValueError(f"材料 {material_key} 的划分比例不是合法数字。") from exc
+            if validate:
+                if not all(0.0 <= value < 1.0 for value in values):
+                    raise ValueError(f"材料 {material_key} 的各划分比例必须位于 [0,1)。")
+                if values[0] <= 0.0 or values[2] <= 0.0:
+                    raise ValueError(f"材料 {material_key} 的训练和测试比例必须大于 0。")
+                if abs(sum(values) - 1.0) > 1e-9:
+                    raise ValueError(f"材料 {material_key} 的训练/验证/测试比例之和必须为 1。")
+            result[material_key] = values  # type: ignore[assignment]
+        return result
+
+    def specs(self) -> list[str]:
+        if not self._rows:
+            self.refresh()
+        return [
+            f"{key}={values[0]:g},{values[1]:g},{values[2]:g}"
+            for key, values in self.as_dict().items()
+        ]
+
+    def to_settings(self) -> dict[str, dict[str, float]]:
+        current = self.as_dict(validate=False) or dict(self._initial)
+        return {
+            key: {
+                "train": values[0],
+                "validation": values[1],
+                "test": values[2],
+            }
+            for key, values in current.items()
+        }
 
 
 class ScrollableFrame(ttk.Frame):
