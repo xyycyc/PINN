@@ -1,0 +1,161 @@
+{
+  "selected_run": {
+    "epoch": 2000,
+    "sample_id": "worker_01_case_0001_T0301p201K",
+    "checkpoint": "D:\\Desktop\\code\\ai_model\\result\\train\\checkpoint\\two_steady_wumu_matrix_2026_7_14_1157\\ai_model.pt",
+    "prediction_run": "D:\\Desktop\\code\\ai_model\\result\\predict\\inference\\two_steady_wumu_matrix_2026_7_14_1157_2026_7_14_151954",
+    "predictions_file": "D:\\Desktop\\code\\ai_model\\result\\predict\\inference\\two_steady_wumu_matrix_2026_7_14_1157_2026_7_14_151954\\predictions.csv",
+    "training_report": "D:\\Desktop\\code\\ai_model\\result\\train\\report\\two_steady_wumu_matrix_2026_7_14_1157\\training_summary.json",
+    "history_json": "D:\\Desktop\\code\\ai_model\\result\\train\\report\\two_steady_wumu_matrix_2026_7_14_1157\\ai_model_history.json"
+  },
+  "coordinate_bounds": {
+    "x_min_m": 0.0,
+    "x_max_m": 0.100000001,
+    "y_min_m": 0.0,
+    "y_max_m": 0.0199999996
+  },
+  "one_dimensional": {
+    "true_mean_k": 301.19992,
+    "predicted_mean_k": 303.37486,
+    "five_point_mean_absolute_error_k": 2.1749399999999923,
+    "five_point_mean_relative_error_percent": 0.7220918252567903,
+    "point_mae_k": 2.174940000000004,
+    "point_rmse_k": 2.1816680430349638,
+    "point_max_abs_error_k": 2.456899999999962,
+    "mean_of_point_relative_error_percent": 0.7220918265558116
+  },
+  "two_dimensional": {
+    "true_mean_k": 301.19978000000003,
+    "predicted_mean_k": 303.33694,
+    "five_point_mean_absolute_error_k": 2.1371599999999944,
+    "five_point_mean_relative_error_percent": 0.7095489910384377,
+    "point_mae_k": 2.137160000000017,
+    "point_rmse_k": 2.1384256087131193,
+    "point_max_abs_error_k": 2.225400000000036,
+    "mean_of_point_relative_error_percent": 0.7095490457766565
+  },
+  "fixed_node_checks": {
+    "sample_count": 200,
+    "all_selected_nodes_present_in_all_samples": true,
+    "all_selected_node_coordinates_consistent_across_samples": true,
+    "selected_node_ids": [
+      2254,
+      62988,
+      65607,
+      103588,
+      116764,
+      138033,
+      155757,
+      167709,
+      173404
+    ],
+    "same_coordinate_multiple_node_count_in_selected_sample": 1001,
+    "same_coordinate_multiple_node_examples": {
+      "0.0,0.00999999978": [
+        3,
+        233322
+      ],
+      "0.100000001,0.00999999978": [
+        4,
+        233323
+      ],
+      "0.000199999995,0.00999999978": [
+        1006,
+        233324
+      ],
+      "0.00039999999,0.00999999978": [
+        1007,
+        233325
+      ],
+      "0.000600000028,0.00999999978": [
+        1008,
+        233326
+      ],
+      "0.00079999998,0.00999999978": [
+        1009,
+        233327
+      ],
+      "0.00100000005,0.00999999978": [
+        1010,
+        233328
+      ],
+      "0.00120000006,0.00999999978": [
+        1011,
+        233329
+      ],
+      "0.00139999995,0.00999999978": [
+        1012,
+        233330
+      ],
+      "0.00159999996,0.00999999978": [
+        1013,
+        233331
+      ],
+      "0.00179999997,0.00999999978": [
+        1014,
+        233332
+      ],
+      "0.00200000009,0.00999999978": [
+        1015,
+        233333
+      ],
+      "0.00219999999,0.00999999978": [
+        1016,
+        233334
+      ],
+      "0.00240000011,0.00999999978": [
+        1017,
+        233335
+      ],
+      "0.00260000001,0.00999999978": [
+        1018,
+        233336
+      ],
+      "0.0027999999,0.00999999978": [
+        1019,
+        233337
+      ],
+      "0.00300000003,0.00999999978": [
+        1020,
+        233338
+      ],
+      "0.00319999992,0.00999999978": [
+        1021,
+        233339
+      ],
+      "0.00340000005,0.00999999978": [
+        1022,
+        233340
+      ],
+      "0.00359999994,0.00999999978": [
+        1023,
+        233341
+      ]
+    },
+    "tie_mappings": []
+  },
+  "candidate_runs": [
+    {
+      "prediction_run": "result/predict/inference/two_steady_wumu_matrix_2026_7_14_1157_2026_7_14_151954",
+      "training_report": "result/train/report/two_steady_wumu_matrix_2026_7_14_1157/training_summary.json",
+      "epoch_evidence": "best_epoch=2000; ai_model_history.json last epoch=2000.0",
+      "selected": true
+    },
+    {
+      "prediction_run": "result/predict/inference/two_steady_wumu_er_cli_2026_7_14_100_*",
+      "training_report": "result/train/report/two_steady_wumu_er_cli_2026_7_14_100/training_summary.json",
+      "epoch_evidence": "history last epoch=100.0, not selected",
+      "selected": false
+    }
+  ],
+  "checks": {
+    "epoch_confirmed_2000": true,
+    "w30mo70_two_dimensional_steady_confirmed_from_wumu_manifest_and_user_material_context": true,
+    "all_temperatures_from_same_predictions_csv": true,
+    "no_image_reading_or_manual_estimation": true,
+    "no_training_executed": true,
+    "no_inference_executed": true,
+    "existing_files_modified": false,
+    "csv_json_readable": true
+  }
+}
