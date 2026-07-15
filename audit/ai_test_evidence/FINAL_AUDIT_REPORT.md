@@ -6,7 +6,7 @@
 - 审计分支：audit/ai-test-evidence
 - 基准分支：agent/fixed-node-temperature-field
 - 基准 commit：58bedc8461759f9afc96510bdc80dd01c1cfdd11
-- 审计 commit：待提交后由 Git 记录；`audit_summary.json` 当前为生成时快照。
+- 审计 commit：e15afe9846d1a18170ae4cb4b38d2f4caa1739ae（审计内容提交；推送分支 HEAD 以 GitHub 和最终回复为准）
 - 审计时间：2026-07-15T15:29:48.297400+00:00
 - 扫描范围：tracked files、untracked project files、manifest、CSV/JSON/MD/Python/Fortran、已有训练/预测报告、已有 checkpoint 元信息、Git log。
 - 未扫描范围及原因：`.git` object internals 未展开；大文件内容未全文哈希；未运行训练、推理、数据生成；未默认执行 checkpoint 参数比较。

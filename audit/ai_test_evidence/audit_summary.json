@@ -3,7 +3,8 @@
   "audit_branch": "audit/ai-test-evidence",
   "base_branch": "agent/fixed-node-temperature-field",
   "base_commit": "58bedc8461759f9afc96510bdc80dd01c1cfdd11",
-  "audit_commit": null,
+  "audit_commit": "e15afe9846d1a18170ae4cb4b38d2f4caa1739ae",
+  "audit_commit_note": "This is the committed audit-content commit recorded after the initial audit commit; the pushed branch HEAD is reported separately in the final Codex response.",
   "generated_at": "2026-07-15T15:29:48.297400+00:00",
   "generated_for_audit_only": true,
   "scan_scope": {
