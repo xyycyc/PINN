@@ -1,0 +1,215 @@
+{
+  "base_checkpoint": "D:\\Desktop\\code\\ai_model\\result\\train\\checkpoint\\two_steady_metal_matrix_2026_5_15_2349\\ai_model.pt",
+  "updated_checkpoint": "D:\\Desktop\\code\\ai_model\\result\\train\\checkpoint\\two_steady_metal_matrix_2026_5_15_2349\\2026_5_16_0042.pt",
+  "base_sha256": "ac23f7e1f41222f0392ae40c244520f6a1d8f8b584628c3a6b4ac2306a76f080",
+  "updated_sha256": "c78394ad258256ce71a9fda7d09855a058d68c614623a2c917c15e88885f896b",
+  "base_only_keys": [],
+  "updated_only_keys": [],
+  "common_parameter_tensors": 22,
+  "parameter_total": 226566,
+  "same_parameter_count": 0,
+  "changed_parameter_count": 226566,
+  "max_absolute_parameter_diff": 0.5244323015213013,
+  "mean_absolute_parameter_diff": 0.004109530598247796,
+  "parameter_norm_change": 9.22799811480119,
+  "per_tensor": [
+    {
+      "parameter": "acoustic_head.bias",
+      "same_shape": 1,
+      "parameter_count": 3,
+      "changed": 1,
+      "max_abs_diff": 0.002345733344554901,
+      "mean_abs_diff": 0.0007819111342541873,
+      "norm_diff": 0.002345733344554901
+    },
+    {
+      "parameter": "acoustic_head.weight",
+      "same_shape": 1,
+      "parameter_count": 384,
+      "changed": 1,
+      "max_abs_diff": 0.05206320434808731,
+      "mean_abs_diff": 0.0019926910754293203,
+      "norm_diff": 0.15815788507461548
+    },
+    {
+      "parameter": "backbone.0.bias",
+      "same_shape": 1,
+      "parameter_count": 128,
+      "changed": 1,
+      "max_abs_diff": 0.006907634437084198,
+      "mean_abs_diff": 0.002851993078365922,
+      "norm_diff": 0.03594764694571495
+    },
+    {
+      "parameter": "backbone.0.weight",
+      "same_shape": 1,
+      "parameter_count": 32768,
+      "changed": 1,
+      "max_abs_diff": 0.5244323015213013,
+      "mean_abs_diff": 0.009191760793328285,
+      "norm_diff": 6.885067939758301
+    },
+    {
+      "parameter": "backbone.2.bias",
+      "same_shape": 1,
+      "parameter_count": 128,
+      "changed": 1,
+      "max_abs_diff": 0.008640564978122711,
+      "mean_abs_diff": 0.0024851071648299694,
+      "norm_diff": 0.036001551896333694
+    },
+    {
+      "parameter": "backbone.2.weight",
+      "same_shape": 1,
+      "parameter_count": 16384,
+      "changed": 1,
+      "max_abs_diff": 0.09748377650976181,
+      "mean_abs_diff": 0.0078102522529661655,
+      "norm_diff": 1.9002529382705688
+    },
+    {
+      "parameter": "encoder.net.0.bias",
+      "same_shape": 1,
+      "parameter_count": 32,
+      "changed": 1,
+      "max_abs_diff": 0.038084663450717926,
+      "mean_abs_diff": 0.00611739419400692,
+      "norm_diff": 0.05879131704568863
+    },
+    {
+      "parameter": "encoder.net.0.weight",
+      "same_shape": 1,
+      "parameter_count": 224,
+      "changed": 1,
+      "max_abs_diff": 0.11297738552093506,
+      "mean_abs_diff": 0.018771041184663773,
+      "norm_diff": 0.4089812636375427
+    },
+    {
+      "parameter": "encoder.net.3.bias",
+      "same_shape": 1,
+      "parameter_count": 64,
+      "changed": 1,
+      "max_abs_diff": 0.03201615810394287,
+      "mean_abs_diff": 0.006005592178553343,
+      "norm_diff": 0.07019463181495667
+    },
+    {
+      "parameter": "encoder.net.3.weight",
+      "same_shape": 1,
+      "parameter_count": 10240,
+      "changed": 1,
+      "max_abs_diff": 0.41881871223449707,
+      "mean_abs_diff": 0.01572502590715885,
+      "norm_diff": 3.074716329574585
+    },
+    {
+      "parameter": "encoder.net.6.bias",
+      "same_shape": 1,
+      "parameter_count": 128,
+      "changed": 1,
+      "max_abs_diff": 0.0284881554543972,
+      "mean_abs_diff": 0.003487620037049055,
+      "norm_diff": 0.05346956476569176
+    },
+    {
+      "parameter": "encoder.net.6.weight",
+      "same_shape": 1,
+      "parameter_count": 24576,
+      "changed": 1,
+      "max_abs_diff": 0.3538109362125397,
+      "mean_abs_diff": 0.01259951014071703,
+      "norm_diff": 4.9106974601745605
+    },
+    {
+      "parameter": "field_head.bias",
+      "same_shape": 1,
+      "parameter_count": 576,
+      "changed": 1,
+      "max_abs_diff": 0.004731971770524979,
+      "mean_abs_diff": 5.547801993088797e-05,
+      "norm_diff": 0.0099335303530097
+    },
+    {
+      "parameter": "field_head.weight",
+      "same_shape": 1,
+      "parameter_count": 73728,
+      "changed": 1,
+      "max_abs_diff": 0.007307771593332291,
+      "mean_abs_diff": 0.00022020882170181721,
+      "norm_diff": 0.17720845341682434
+    },
+    {
+      "parameter": "lstm_encoder.lstm.bias_hh_l0",
+      "same_shape": 1,
+      "parameter_count": 512,
+      "changed": 1,
+      "max_abs_diff": 0.004886507987976074,
+      "mean_abs_diff": 5.0374696002108976e-05,
+      "norm_diff": 0.007809817790985107
+    },
+    {
+      "parameter": "lstm_encoder.lstm.bias_ih_l0",
+      "same_shape": 1,
+      "parameter_count": 512,
+      "changed": 1,
+      "max_abs_diff": 0.0048864418640732765,
+      "mean_abs_diff": 5.037376467953436e-05,
+      "norm_diff": 0.007809860166162252
+    },
+    {
+      "parameter": "lstm_encoder.lstm.weight_hh_l0",
+      "same_shape": 1,
+      "parameter_count": 65536,
+      "changed": 1,
+      "max_abs_diff": 0.005779965780675411,
+      "mean_abs_diff": 5.600243457593024e-05,
+      "norm_diff": 0.09168517589569092
+    },
+    {
+      "parameter": "lstm_encoder.lstm.weight_ih_l0",
+      "same_shape": 1,
+      "parameter_count": 512,
+      "changed": 1,
+      "max_abs_diff": 0.015360798686742783,
+      "mean_abs_diff": 0.0030267799738794565,
+      "norm_diff": 0.13617421686649323
+    },
+    {
+      "parameter": "temperature_head.bias",
+      "same_shape": 1,
+      "parameter_count": 1,
+      "changed": 1,
+      "max_abs_diff": 0.001613117754459381,
+      "mean_abs_diff": 0.001613117754459381,
+      "norm_diff": 0.001613117754459381
+    },
+    {
+      "parameter": "temperature_head.weight",
+      "same_shape": 1,
+      "parameter_count": 128,
+      "changed": 1,
+      "max_abs_diff": 0.20910225808620453,
+      "mean_abs_diff": 0.02358647622168064,
+      "norm_diff": 0.5543011426925659
+    },
+    {
+      "parameter": "weight_cnn",
+      "same_shape": 1,
+      "parameter_count": 1,
+      "changed": 1,
+      "max_abs_diff": 0.0069443583488464355,
+      "mean_abs_diff": 0.0069443583488464355,
+      "norm_diff": 0.0069443583488464355
+    },
+    {
+      "parameter": "weight_lstm",
+      "same_shape": 1,
+      "parameter_count": 1,
+      "changed": 1,
+      "max_abs_diff": 0.0027534961700439453,
+      "mean_abs_diff": 0.0027534961700439453,
+      "norm_diff": 0.0027534961700439453
+    }
+  ]
+}
