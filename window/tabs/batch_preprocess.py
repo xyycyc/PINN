@@ -113,7 +113,7 @@ class BatchPreprocessTab(BaseCommandTab):
             default=str(
                 self._cfg_value(
                     "pipelines",
-                    "base;clip,smooth;clip,smooth,detrend,zscore;smooth,robust_norm",
+                    "base;clip,smooth;clip,smooth,detrend;smooth,robust_norm",
                 )
             ),
             hint="示例：基础；裁峰与平滑；裁峰、平滑、去趋势与标准化等，用分号分隔多组",

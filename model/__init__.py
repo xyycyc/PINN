@@ -13,7 +13,12 @@ from .checkpoint_runtime import (
     sync_config_for_inference,
 )
 from .network import AIReconstructionModel, ConvEncoder, LSTMEncoder
-from .predict import default_predict_output_name, predict_and_compare
+from .predict import (
+    default_predict_output_name,
+    predict_and_compare,
+    predict_collection_with_checkpoint,
+    predict_with_material_router,
+)
 from .rule_registry import (
     DIMENSION_CHOICES,
     MODE_CHOICES,
@@ -32,7 +37,12 @@ from .rule_registry import (
     rule_csv_path,
     validate_rule_triplet,
 )
-from .trainer import OnlineUpdater, ReconstructionTrainer, _default_device
+from .trainer import (
+    MATERIAL_ROUTER_KIND,
+    OnlineUpdater,
+    ReconstructionTrainer,
+    _default_device,
+)
 
 __all__ = [
     "apply_inference_config",
@@ -55,9 +65,12 @@ __all__ = [
     "LSTMEncoder",
     "OnlineUpdater",
     "ReconstructionTrainer",
+    "MATERIAL_ROUTER_KIND",
     "_default_device",
     "default_predict_output_name",
     "predict_and_compare",
+    "predict_collection_with_checkpoint",
+    "predict_with_material_router",
     "DIMENSION_CHOICES",
     "MODE_CHOICES",
     "RuleRecord",

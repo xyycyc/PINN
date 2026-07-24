@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -14,11 +15,17 @@ from .material_registry import ensure_material_csv, register_material
 
 
 def _extract_temperature_from_name(file_name: str) -> float:
-    match = re.search(r"[-+]?\d*\.?\d+", file_name)
-    if not match:
-        raise ValueError(f"无法从文件名中提取温度: {file_name}")
-    value = float(match.group())
-    return value if value > 273.15 else value + 273.15
+    stem = Path(file_name).stem.strip()
+    if re.fullmatch(r"[-+]?\d+(?:\.\d+)?", stem):
+        return float(stem)
+    tagged = re.match(
+        r"^T(?P<temperature>[-+]?\d+(?:[p.]\d+)?)[CK](?:_|$)",
+        stem,
+        flags=re.IGNORECASE,
+    )
+    if tagged is not None:
+        return float(tagged.group("temperature").replace("p", "."))
+    raise ValueError(f"文件名不是受支持的温度波形命名: {file_name}")
 
 
 def _dlm_csv_skiprows(csv_path: Path) -> int:
@@ -189,9 +196,42 @@ class DatabaseBuilder:
         limit: int | None = None,
     ) -> Path:
         source_dir = Path(source_dir)
-        self._register_material(material_key, source=source_label)
         records: list[dict[str, Any]] = []
-        csv_files = sorted(source_dir.rglob("*.csv"))
+        csv_files = sorted(source_dir.rglob("*.csv")) if source_dir.is_dir() else []
+        reason_counts: Counter[str] = Counter()
+        failure_examples: list[dict[str, str]] = []
+
+        def record_skip(path: Path, reason: str, detail: str = "") -> None:
+            reason_counts[reason] += 1
+            if len(failure_examples) < 100:
+                failure_examples.append(
+                    {"path": str(path), "reason": reason, "detail": str(detail)}
+                )
+
+        def write_import_report() -> Path:
+            report_path = self.database_dir / f"{Path(output_name).stem}_import_report.json"
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "source_dir": str(source_dir.resolve()),
+                        "source_label": source_label,
+                        "material_label": material_key,
+                        "csv_files_scanned": len(csv_files),
+                        "records_imported": len(records),
+                        "reason_counts": dict(sorted(reason_counts.items())),
+                        "failure_examples": failure_examples,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            return report_path
+
+        if not source_dir.is_dir():
+            record_skip(source_dir, "source_directory_missing", "目录不存在或不是文件夹")
+        elif not csv_files:
+            record_skip(source_dir, "no_csv_files", "目录中没有找到 CSV")
 
         if limit is not None and limit <= 0:
             manifest_path = self.database_dir / output_name
@@ -205,16 +245,28 @@ class DatabaseBuilder:
             if limit is not None and len(records) >= limit:
                 break
             if csv_path.name.upper().startswith("BASIC") or csv_path.name.upper().startswith("DOWN"):
+                record_skip(csv_path, "reserved_baseline_file")
                 continue
             try:
                 temperature_k = _extract_temperature_from_name(csv_path.name)
-            except ValueError:
+            except ValueError as exc:
+                record_skip(csv_path, "unsupported_temperature_filename", str(exc))
                 continue
 
             try:
-                frame = pd.read_csv(csv_path, header=None, skiprows=_dlm_csv_skiprows(csv_path))
+                frame = pd.read_csv(
+                    csv_path,
+                    header=None,
+                    skiprows=_dlm_csv_skiprows(csv_path),
+                    low_memory=False,
+                )
+                if frame.shape[1] < 2:
+                    raise ValueError(f"CSV 至少需要两列，实际为 {frame.shape[1]}")
                 signal = frame.iloc[:, 1].to_numpy(dtype=np.float32)
-            except Exception:
+                if signal.size == 0 or not np.isfinite(signal).all():
+                    raise ValueError("波形列为空或包含非有限值")
+            except Exception as exc:
+                record_skip(csv_path, "csv_parse_failed", f"{type(exc).__name__}: {exc}")
                 continue
 
             # 建库仅保存重采样后的原始实验波形；clip/smooth 等在训练/推理阶段由 Dataset + 模型入口处理。
@@ -239,6 +291,13 @@ class DatabaseBuilder:
                 )
             )
 
+        report_path = write_import_report()
+        if not records:
+            raise ValueError(
+                f"未从 {source_dir} 导入任何有效波形；扫描 {len(csv_files)} 个 CSV。"
+                f"详细原因见 {report_path}"
+            )
+        self._register_material(material_key, source=source_label)
         manifest_path = self.database_dir / output_name
         manifest_path.write_text(
             json.dumps(
@@ -297,6 +356,9 @@ class DatabaseBuilder:
             manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
             records.extend(manifest.get("records", []))
 
+        if not records:
+            raise ValueError("待合并的 manifest 没有任何记录，拒绝生成空数据库")
+
         output_path = self.database_dir / output_name
         output_path.write_text(
             json.dumps({"dataset_name": "ai_model_combined_db", "records": records}, ensure_ascii=False, indent=2),
@@ -308,8 +370,26 @@ class DatabaseBuilder:
         manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
         records = manifest.get("records", [])
         sim_records = [item for item in records if item.get("source") in {"simulation", "external_simulation"}]
-        exp_records = [item for item in records if item["source"] == "experiment"]
-        materials = sorted({item["material_key"] for item in records})
+        exp_records = [item for item in records if item.get("source") in {"experiment", "experiment_case"}]
+        sample_material_catalog = [
+            dict(item)
+            for item in manifest.get("sample_material_catalog", [])
+            if isinstance(item, dict) and str(item.get("material_key", "")).strip()
+        ]
+        if sample_material_catalog:
+            materials = sorted(
+                {str(item["material_key"]).strip() for item in sample_material_catalog}
+            )
+            material_source = "manifest.sample_material_catalog"
+        else:
+            materials = sorted(
+                {
+                    str(item.get("material_key", "")).strip()
+                    for item in records
+                    if str(item.get("material_key", "")).strip()
+                }
+            )
+            material_source = "records.material_key"
         temperatures: list[float] = []
         for item in records:
             temperatures.append(float(item["temperature_k"]))
@@ -323,6 +403,12 @@ class DatabaseBuilder:
             "simulation_records": len(sim_records),
             "experiment_records": len(exp_records),
             "materials": materials,
+            "sample_material_catalog": sample_material_catalog,
+            "constituent_material_catalog": manifest.get(
+                "constituent_material_catalog", []
+            ),
+            "material_source": material_source,
+            "dataset_label": str(manifest.get("dataset_label", "")).strip(),
             "temperature_range_k": [min(temperatures) if temperatures else None, max(temperatures) if temperatures else None],
             "meets_3_3_min_simulation": len(sim_records) >= self.config.min_simulation_samples,
             "meets_3_3_min_experiment": len(exp_records) >= self.config.min_experiment_samples,

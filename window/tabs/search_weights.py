@@ -20,7 +20,7 @@ from .base import BaseCommandTab, DeviceChoices, TrainingModes
 class SearchWeightsTab(BaseCommandTab):
     title = "固定权重搜索"
     description = (
-        "在固定分支权重模式下，对网络分支与物性分支的权重做网格搜索，"
+        "在固定分支权重模式下，对当前模型实际存在的 CNN/LSTM 网络分支权重做网格搜索，"
         "按验证集误差排序输出汇总结果。"
     )
     settings_section = "search_weights"
@@ -100,17 +100,9 @@ class SearchWeightsTab(BaseCommandTab):
             weight_section,
             "网络分支权重",
             default=str(self._cfg_value("network_weights", "0.75,1.0,1.25")),
-            hint="逗号分隔，分别为卷积网络与时序网络分支的候选权重",
+            hint="逗号分隔；CNN 与 LSTM 共用候选列表并执行笛卡尔积组合",
         )
         self.network_weights.pack(fill="x", padx=PADX, pady=PADY)
-
-        self.physical_weights = LabeledEntry(
-            weight_section,
-            "物性分支权重",
-            default=str(self._cfg_value("physical_weights", "1.0,2.0,3.0")),
-            hint="逗号分隔，分别为材料、尺寸、模式分支的候选权重",
-        )
-        self.physical_weights.pack(fill="x", padx=PADX, pady=PADY)
 
         self.preprocess = self.add_preprocess_section(parent)
 
@@ -123,8 +115,6 @@ class SearchWeightsTab(BaseCommandTab):
             raise ValueError("训练轮数不能低于 1000")
         if not self.network_weights.get():
             raise ValueError("网络分支权重不能为空")
-        if not self.physical_weights.get():
-            raise ValueError("物性分支权重不能为空")
 
     def compose_command(self) -> list[str]:
         args: list[str] = []
@@ -146,8 +136,6 @@ class SearchWeightsTab(BaseCommandTab):
             args.extend(["--physics-residual-weight", str(val)])
         if (val := self.network_weights.get()):
             args.extend(["--network-weights", val])
-        if (val := self.physical_weights.get()):
-            args.extend(["--physical-weights", val])
         args.extend(self.preprocess_args(self.preprocess))
         return self.python_module_cmd("ai_model.batch.search_fixed_weights", *args)
 
@@ -162,7 +150,6 @@ class SearchWeightsTab(BaseCommandTab):
             "training_mode": self.training_mode.get(),
             "physics_residual_weight": self.physics_residual.get(),
             "network_weights": self.network_weights.get(),
-            "physical_weights": self.physical_weights.get(),
         }
         data.update(self.preprocess_to_dict(self.preprocess))
         return data

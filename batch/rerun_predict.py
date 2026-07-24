@@ -20,6 +20,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from .batch_test_modes import _resolve_project_path
+
 import torch
 from tqdm.auto import tqdm
 
@@ -127,6 +129,7 @@ def rerun_predictions(
                     manifest_path=test_manifest,
                     output_dir=predictions_dir,
                     sync_config_from_checkpoint=False,
+                    enable_plots=True,
                     num_field_samples=num_field_samples,
                 )
                 tqdm.write(
@@ -191,7 +194,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = _build_parser().parse_args()
-    run_dir = Path(args.run_dir)
+    run_dir = _resolve_project_path(args.run_dir)
     if not run_dir.exists():
         raise FileNotFoundError(f"--run-dir 不存在: {run_dir}")
     summary_csv = rerun_predictions(

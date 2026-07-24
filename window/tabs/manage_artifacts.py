@@ -18,10 +18,34 @@ from ..rules import (
     load_rule_rows,
     unique_materials,
 )
-from ..settings import Settings
+from ..settings import DEFAULT_SETTINGS, Settings
 from ..widgets import FileEntry, LabeledCombobox, PADX, PADY, Section
 
 NO_RULE_PLACEHOLDER = "暂无"
+
+
+def _standalone_root_default(
+    common: dict[str, Any],
+    local: dict[str, Any],
+    key: str,
+    fallback: str,
+) -> str:
+    """Resolve roots when this tab is instantiated without ``PathSettingsTab``.
+
+    ``Settings.section()`` fills ``local`` with built-in defaults.  Treating that
+    filled value as an explicit override would therefore hide a customized
+    ``common`` root.  A genuinely customized per-tab value still wins for the
+    standalone use case.
+    """
+
+    local_value = str(local.get(key, "") or "").strip()
+    common_value = str(common.get(key, "") or "").strip()
+    built_in = str(
+        DEFAULT_SETTINGS.get("manage_artifacts", {}).get(key, fallback) or fallback
+    ).strip()
+    if local_value and local_value != built_in:
+        return local_value
+    return common_value or local_value or fallback
 
 
 class ManageArtifactsTab(ttk.Frame):
@@ -41,12 +65,23 @@ class ManageArtifactsTab(ttk.Frame):
         settings: Settings | None = None,
         path_settings_tab: Any | None = None,
     ) -> None:
-        del run_callback, stop_callback, path_settings_tab
+        del run_callback, stop_callback
         super().__init__(master)
         self.repo_root = Path(repo_root)
         self.settings = settings or Settings()
         self.common = self.settings.section("common")
         self.local = self.settings.section(self.settings_section)
+        shared_roots = getattr(path_settings_tab, "io_roots", None)
+        self._shared_io_roots = shared_roots if isinstance(shared_roots, dict) else None
+
+        def root_default(key: str, fallback: str) -> str:
+            if self._shared_io_roots is not None:
+                control = self._shared_io_roots.get(key)
+                if control is not None and hasattr(control, "get"):
+                    value = str(control.get() or "").strip()
+                    if value:
+                        return value
+            return _standalone_root_default(self.common, self.local, key, fallback)
 
         ttk.Label(
             self,
@@ -60,17 +95,19 @@ class ManageArtifactsTab(ttk.Frame):
         self.data_root = FileEntry(
             root_section,
             "输入根目录",
-            default=str(self.local.get("data_root", self.common.get("data_root", "database"))),
+            default=root_default("data_root", "database"),
             directory=True,
         )
         self.data_root.pack(fill="x", padx=PADX, pady=PADY)
         self.result_root = FileEntry(
             root_section,
             "输出根目录",
-            default=str(self.local.get("result_root", self.common.get("result_root", "result"))),
+            default=root_default("result_root", "result"),
             directory=True,
         )
         self.result_root.pack(fill="x", padx=PADX, pady=PADY)
+        self._bind_shared_root_variable("data_root", self.data_root)
+        self._bind_shared_root_variable("result_root", self.result_root)
 
         dims, modes = default_rule_choices()
         rule_section = Section(self, "规则三元组")
@@ -105,7 +142,7 @@ class ManageArtifactsTab(ttk.Frame):
             [],
             default="",
             width=64,
-            hint="按登记时间从新到旧展示；删除只作用于当前选中的这一条",
+            hint="按登记时间从新到旧展示；分材料 checkpoint 会按完整路由组清理",
         )
         self.checkpoint.pack(fill="x", padx=PADX, pady=PADY)
 
@@ -143,12 +180,67 @@ class ManageArtifactsTab(ttk.Frame):
         )
         self.rule_mode.combo.bind("<<ComboboxSelected>>", lambda _e: self._sync_checkpoint_from_rule())
         self._refresh_rule_rows()
+        self._root_trace_handles: list[tuple[tk.Variable, str]] = []
+        self._install_root_change_guards()
 
     def _cfg_data_root(self) -> str:
-        return self.data_root.get() or "database"
+        return self._root_value("data_root", self.data_root, "database")
 
     def _cfg_result_root(self) -> str:
-        return self.result_root.get() or "result"
+        return self._root_value("result_root", self.result_root, "result")
+
+    def _bind_shared_root_variable(self, key: str, local_control: FileEntry) -> None:
+        """Make the cleanup form and Path Settings edit the same live value."""
+
+        if self._shared_io_roots is None:
+            return
+        shared_control = self._shared_io_roots.get(key)
+        shared_var = getattr(shared_control, "var", None)
+        if shared_var is None:
+            return
+        local_control.var = shared_var
+        local_control.entry.configure(textvariable=shared_var)
+
+    def _root_value(self, key: str, local_control: FileEntry, fallback: str) -> str:
+        if self._shared_io_roots is not None:
+            shared_control = self._shared_io_roots.get(key)
+            if shared_control is not None and hasattr(shared_control, "get"):
+                value = str(shared_control.get() or "").strip()
+                if value:
+                    return value
+        return local_control.get() or fallback
+
+    def _install_root_change_guards(self) -> None:
+        """Invalidate a selection immediately when either configured root changes."""
+
+        seen: set[str] = set()
+        for control in (self.data_root, self.result_root):
+            variable = getattr(control, "var", None)
+            if variable is None or str(variable) in seen:
+                continue
+            seen.add(str(variable))
+            token = variable.trace_add("write", self._on_root_changed)
+            self._root_trace_handles.append((variable, token))
+
+    def _on_root_changed(self, *_args: object) -> None:
+        # Never retain an absolute checkpoint selected under a previous root.
+        # Scanning is left to the explicit Refresh button so typing a path does
+        # not repeatedly touch partially entered directories.
+        self._latest_plan = None
+        self._rule_rows = []
+        self._checkpoint_label_to_path.clear()
+        self.checkpoint.combo.configure(values=[NO_CHECKPOINT_LABEL], state="disabled")
+        self.checkpoint.set(NO_CHECKPOINT_LABEL)
+        self._set_preview_text("根目录已变化；旧选择已清空，请点击“刷新规则映射”。")
+
+    def destroy(self) -> None:
+        for variable, token in getattr(self, "_root_trace_handles", []):
+            try:
+                variable.trace_remove("write", token)
+            except tk.TclError:
+                pass
+        self._root_trace_handles = []
+        super().destroy()
 
     def _selected_checkpoint_path(self) -> str:
         label = self.checkpoint.get()
@@ -157,7 +249,10 @@ class ManageArtifactsTab(ttk.Frame):
         return self._checkpoint_label_to_path.get(label, "")
 
     def _refresh_rule_rows(self) -> None:
-        self._rule_rows = load_rule_rows(self._cfg_data_root())
+        self._rule_rows = load_rule_rows(
+            self._cfg_data_root(),
+            self._cfg_result_root(),
+        )
         self._update_rule_material_options()
         self._update_rule_dimension_options()
         self._update_rule_mode_options()
@@ -232,9 +327,18 @@ class ManageArtifactsTab(ttk.Frame):
             f"目标类型: {'增量模型' if plan.target_is_incremental else '全量模型'}",
             f"训练任务目录: {plan.target_train_name}",
             f"CSV 登记条数: {plan.csv_rows_for_target}",
-            "",
-            "将删除(目标)训练报告:",
         ]
+        if plan.material_router_paths:
+            lines.extend(
+                [
+                    "分材料路由组: 是（为避免路由失效，将整组清理）",
+                    "材料路由文件:",
+                    *[f"  - {path}" for path in plan.material_router_paths],
+                    "组内 checkpoint:",
+                    *[f"  - {path}" for path in plan.material_group_checkpoints],
+                ]
+            )
+        lines.extend(["", "将删除(目标)训练报告:"])
         if plan.target_report_paths:
             lines.extend([f"  - {p}" for p in plan.target_report_paths])
         else:
@@ -284,9 +388,15 @@ class ManageArtifactsTab(ttk.Frame):
             include_dependents = bool(choice)
             promote_dependents = not bool(choice)
 
+        group_note = ""
+        if self._latest_plan.material_router_paths:
+            group_note = (
+                f"\n\n该检查点属于分材料路由组，将同时删除 "
+                f"{len(self._latest_plan.material_group_checkpoints)} 个材料 checkpoint 和路由文件。"
+            )
         if not messagebox.askyesno(
             "确认删除",
-            "将执行不可恢复的文件删除与 CSV 更新，确认继续吗？",
+            f"将执行不可恢复的文件删除与 CSV 更新，确认继续吗？{group_note}",
         ):
             return
 

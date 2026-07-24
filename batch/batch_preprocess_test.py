@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .batch_test_modes import run_batch_test
+from .batch_test_modes import _resolve_project_path, run_batch_test
 from ..data_process import parse_preprocess_steps
 from tqdm.auto import tqdm
 
@@ -17,7 +17,7 @@ def _parse_pipeline_group(raw: str) -> list[dict[str, Any]]:
     Parse pipeline groups from string.
 
     Format:
-      "base;clip,smooth;clip,smooth,detrend,zscore"
+      "base;clip,smooth;clip,smooth,detrend;smooth,robust_norm"
     """
     groups = [item.strip() for item in str(raw).split(";") if item.strip()]
     pipelines: list[dict[str, Any]] = []
@@ -170,8 +170,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--pipelines",
         type=str,
-        default="base;clip,smooth;clip,smooth,detrend,zscore;smooth,robust_norm",
-        help="分号分隔多组 pipeline，例如: base;clip,smooth;clip,smooth,detrend,zscore",
+        default="base;clip,smooth;clip,smooth,detrend;smooth,robust_norm",
+        help="分号分隔多组 pipeline，例如: base;clip,smooth;clip,smooth,detrend;smooth,robust_norm",
     )
     parser.add_argument(
         "--resume-run-dir",
@@ -184,8 +184,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = _build_parser().parse_args()
-    data_root = Path(args.data_root)
-    result_root = Path(args.result_root)
+    data_root = _resolve_project_path(args.data_root)
+    result_root = _resolve_project_path(args.result_root)
     if not data_root.exists():
         raise FileNotFoundError(f"数据目录不存在: {data_root}")
     if not (0.0 < args.test_ratio < 1.0):
@@ -196,7 +196,11 @@ def main() -> None:
     pipelines = _parse_pipeline_group(args.pipelines)
     if not pipelines:
         raise ValueError("至少需要 1 组 pipeline")
-    resume_run_dir = Path(args.resume_run_dir) if str(args.resume_run_dir).strip() else None
+    resume_run_dir = (
+        _resolve_project_path(args.resume_run_dir)
+        if str(args.resume_run_dir).strip()
+        else None
+    )
     if resume_run_dir is not None and not resume_run_dir.exists():
         raise FileNotFoundError(f"--resume-run-dir 不存在: {resume_run_dir}")
 

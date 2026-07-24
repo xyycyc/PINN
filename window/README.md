@@ -34,7 +34,7 @@ python -m ai_model.window
 
 | 分组 | Tab | 对应命令 |
 | --- | --- | --- |
-| 主流程 | 路径设置 | （共用输入/输出根目录、Python 解释器、子进程工作目录；写入 `settings.json` 的 `common`，不单独跑命令） |
+| 主流程 | 路径设置 | （共用输入/输出根目录和子进程工作目录；Python 固定为启动窗口的解释器；写入 `settings.json` 的 `common`） |
 | 主流程 | 构建数据库 | `python -m ai_model build-db` |
 | 主流程 | 训练模型 | `python -m ai_model train` |
 | 主流程 | 预测对比 | `python -m ai_model predict` |
@@ -45,11 +45,11 @@ python -m ai_model.window
 
 每个命令型 Tab 都遵循统一布局：
 
-- 上方表单：各 Tab 专属参数；主流程将「输入/输出根目录」以及 **Python 解释器路径、子进程工作目录** 集中在 **路径设置**，
-  其它主流程 Tab 执行命令时会自动带上输入/输出根目录；解释器与工作目录由路径页（及 `common` 配置）决定；
+- 上方表单：各 Tab 专属参数；主流程将「输入/输出根目录」和 **子进程工作目录** 集中在 **路径设置**，
+  其它主流程 Tab 执行命令时会自动带上输入/输出根目录；Python 始终使用启动窗口的解释器，工作目录可由路径页覆盖；
   设备、训练轮数、权重、预处理等仍在各自功能页配置；
 - 右下两个按钮：
-  - **执行**：根据表单内容拼出 `<python> -m ai_model.xxx --opt val ...`（解释器见路径设置），
+  - **执行**：根据表单内容拼出 `<启动窗口的 python> -m ai_model <subcommand> --opt val ...`，
     在后台启动子进程并实时把输出写到日志面板；子进程 **cwd** 默认为 **ai_model 包目录的上一级**（便于 `python -m ai_model`），可在路径设置中覆盖；
   - **停止**：先 `terminate`，超时则 `kill`，安全终止当前任务。
 
@@ -61,16 +61,29 @@ python -m ai_model.window
 - **训练模式 `--training-mode`**：`normal / residual_pinn`
 - **物理残差权重 `--physics-residual-weight`**：仅 `residual_pinn` 生效
 - **可学习分支权重 `--learnable-branch-weights`**：勾选启用，
-  否则各分支权重固定为 `1`
+  CNN/LSTM 输入值作为初值；不勾选时则固定为表单值（默认均为 `0.75`）
 - **预处理流水线 `--preprocess`**：逗号分隔，可选
-  `clip,smooth,detrend,robust_norm,zscore`，
+  `clip,smooth,detrend,robust_norm`；模型输入前会自动执行 z-score，不要在流水线中重复填写，
   也可在 “预设” 下拉里直接选常用组合
 
 各 Tab 还会暴露各自专属的参数（如 `--sim-per-material`、
 `--experiment-limit`、`--num-field-samples`、`--pipelines` 等），
 名字与 CLI 完全对齐，便于查阅 [`README.md`](../README.md)。
 
-## 结果浏览 Tab
+近期兼容行为：
+
+- 构建数据库和一键演示可扫描多材料上层目录，并为每个直接子材料文件夹单独设置 train/validation/test 比例；多材料模式隐藏旧全局比例，只采用逐材料表；
+- 构建数据库页可把 post0 原始波形作为 `inference_only` 外部测试集挂接到指定材料，外部样本不参与训练和验证；
+- 训练和演示可对 `material_collection.json` 中每种样本材料分别训练完整 checkpoint；预测页按记录的 `material_key` 选择对应模型；
+- 训练运行参数只展示当前网络实际存在的 CNN、LSTM 两个固定分支权重；
+- 训练、预测、校验、增量训练默认自动选择最新清单，关闭开关后严格使用手填清单；
+- 预测/增量训练默认继承 checkpoint 预处理，只有勾选覆盖开关才发送本页预处理参数。
+- 二维固定节点模型可选择输出完整二维场，或在预测后提取归一化 `x=0.5` 中心轴生成一维对比图；一维旧模型只能选择一维输出。
+- 固定节点训练与增量训练目前只支持 `normal`；界面会在启动子进程前拦截 `residual_pinn`。
+- `wumu` 是一种完整的“钨钼多层材料”；`layer_1/layer_2` 只是内部组分层，不会拆成两个 checkpoint。
+- 一键演示会登记生成的混合 checkpoint 或分材料完整 checkpoint，预测页可直接发现。
+
+## 结果浏览 Tab（当前界面暂时隐藏，代码保留）
 
 - 默认根目录为 `result`（相对 **ai_model 包根目录** 解析），可点 “浏览…” 切换；
 - 左侧目录树支持懒加载（点击展开时才扫描子目录），不会卡住大目录；
@@ -84,8 +97,8 @@ python -m ai_model.window
 
 - `runner.py` 强制设置 `PYTHONIOENCODING=utf-8`、`PYTHONUTF8=1`，
   避免 Windows 控制台默认 GBK 把中文 tqdm/print 打成乱码；
-- 子进程的 **cwd** 默认为 **ai_model 包目录的上一级**（与在上一级目录执行 `python -m ai_model.xxx` 一致），
-  可在「路径设置」中填写「子进程工作目录」覆盖；**Python 解释器** 默认同启动 GUI 的 `python`，也可在路径设置中指定；
+- 子进程的 **cwd** 默认为 **ai_model 包目录的上一级**（与在上一级目录执行 `python -m ai_model <subcommand>` 一致），
+  可在「路径设置」中填写「子进程工作目录」覆盖；**Python 解释器固定为启动 GUI 的 Python**；
 - 一次只允许一个任务运行；停止任务先 `terminate` 5 秒等待，
   超时再 `kill`；
 - 关闭窗口前若发现仍有任务在跑，会弹窗确认是否一起终止。

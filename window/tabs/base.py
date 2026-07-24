@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import json
 import tkinter as tk
 from collections.abc import Callable
 from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Any
 
+from ...data_process import latest_material_collection, latest_split_manifest
 from ..settings import Settings
+from ..rules import resolve_gui_project_path
 from ..widgets import (
     PADX,
     PADY,
@@ -190,7 +191,7 @@ class BaseCommandTab(ttk.Frame):
         }
 
         if include_fixed_weights:
-            fixed_section = Section(parent, "固定组合模式下的分支权重（仅该模式下生效）")
+            fixed_section = Section(parent, "CNN/LSTM 分支权重（可学习模式下作为初始值）")
             fixed_section.pack(fill="x", padx=PADX, pady=PADY)
 
             fw_cnn = LabeledNumber(
@@ -472,12 +473,17 @@ class BaseCommandTab(ttk.Frame):
             out["epochs"] = controls["epochs"].get()  # type: ignore[union-attr]
         return out
 
-    def preprocess_args(self, controls: dict[str, object]) -> list[str]:
+    def preprocess_args(
+        self,
+        controls: dict[str, object],
+        *,
+        include_empty: bool = False,
+    ) -> list[str]:
         """把 ``add_preprocess_section`` 收集的控件转成 CLI 参数。"""
 
         args: list[str] = []
         custom = str(controls["custom"].get()).strip()  # type: ignore[union-attr]
-        if custom:
+        if custom or include_empty:
             args.extend(["--preprocess", custom])
         clip_q = controls["clip_quantile"].get()  # type: ignore[union-attr]
         if clip_q is not None:
@@ -521,35 +527,32 @@ class BaseCommandTab(ttk.Frame):
     def _resolve_data_root_path(self) -> Path:
         roots = self._path_io_roots()
         raw = str(roots["data_root"].get() or "").strip()  # type: ignore[union-attr]
-        path = Path(raw) if raw else Path("database")
-        if path.is_absolute():
-            return path
-        return Path(self.repo_root) / path
+        return resolve_gui_project_path(
+            raw or "database",
+            repo_root=self.repo_root,
+        )
 
-    def _latest_split_config_path(self) -> Path | None:
-        data_root = self._resolve_data_root_path()
-        root = data_root / "data_process"
-        if not root.exists():
-            return None
-        candidates = [p for p in root.glob("*/split_config.json") if p.is_file()]
-        if not candidates:
-            return None
-        candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        return candidates[0]
+    def _resolve_result_root_path(self) -> Path:
+        roots = self._path_io_roots()
+        raw = str(roots["result_root"].get() or "").strip()  # type: ignore[union-attr]
+        return resolve_gui_project_path(
+            raw or "result",
+            repo_root=self.repo_root,
+        )
 
     def resolve_latest_split_manifest(self, kind: str) -> str:
         if kind not in {"train", "test", "combined"}:
             return ""
-        cfg = self._latest_split_config_path()
-        if cfg is None:
-            return ""
         try:
-            payload = json.loads(cfg.read_text(encoding="utf-8"))
-            manifests = payload.get("manifests", {})
-            if not isinstance(manifests, dict):
-                return ""
-            value = manifests.get(kind)
-            return str(value).strip() if value else ""
+            path = latest_split_manifest(self._resolve_data_root_path(), kind)
+            return str(path) if path is not None else ""
+        except Exception:
+            return ""
+
+    def resolve_latest_material_collection(self) -> str:
+        try:
+            path = latest_material_collection(self._resolve_data_root_path())
+            return str(path) if path is not None else ""
         except Exception:
             return ""
 

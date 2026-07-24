@@ -24,6 +24,24 @@ except Exception:  # pragma: no cover
     plt = None
 
 
+def _resolve_project_path(path_like: str | Path) -> Path:
+    """Resolve batch CLI paths with the same contract as the main CLI.
+
+    The GUI launches subprocesses from the package's parent directory, while
+    the main CLI treats relative data/result roots as relative to the
+    ``ai_model`` package directory.  Batch commands must follow that same rule
+    or their documented defaults point at a different database and result tree.
+    """
+
+    config = AIModelConfig()
+    path = Path(path_like).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+    if path.parts and path.parts[0].casefold() == config.repo_root.name.casefold():
+        return (config.repo_root.parent / path).resolve()
+    return (config.repo_root / path).resolve()
+
+
 def _to_jsonable_dict(data: dict[str, Any]) -> dict[str, Any]:
     converted: dict[str, Any] = {}
     for key, value in data.items():
@@ -366,7 +384,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--preprocess",
         type=str,
         default="",
-        help="实验波形预处理流水线，逗号分隔: clip,smooth,detrend,robust_norm,zscore",
+        help="实验波形预处理流水线，逗号分隔: clip,smooth,detrend,robust_norm",
     )
     parser.add_argument("--clip-quantile", type=float, default=1.0)
     parser.add_argument("--smooth-window", type=int, default=11)
@@ -375,8 +393,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = _build_parser().parse_args()
-    data_root = Path(args.data_root)
-    result_root = Path(args.result_root)
+    data_root = _resolve_project_path(args.data_root)
+    result_root = _resolve_project_path(args.result_root)
     if not data_root.exists():
         raise FileNotFoundError(f"数据目录不存在: {data_root}")
     if not (0.0 < args.test_ratio < 1.0):

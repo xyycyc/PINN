@@ -108,6 +108,14 @@ class CommandRunner:
         env.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
         if extra_env:
             env.update({str(k): str(v) for k, v in extra_env.items()})
+        # ``launch_root`` is intentionally configurable in the Window.  Keep the
+        # local ai_model package importable even when that working directory is
+        # outside the repository (the default cwd happens to work without this).
+        package_parent = str(ai_model_package_dir().parent)
+        python_path = [item for item in env.get("PYTHONPATH", "").split(os.pathsep) if item]
+        if not any(Path(item).resolve() == Path(package_parent).resolve() for item in python_path):
+            python_path.insert(0, package_parent)
+        env["PYTHONPATH"] = os.pathsep.join(python_path)
 
         cwd_path = Path(cwd) if cwd else self._default_cwd
         cmd_text = format_command(cmd)
@@ -169,8 +177,9 @@ class CommandRunner:
         assert proc is not None
         try:
             assert proc.stdout is not None
-            for line in proc.stdout:
-                self._log(line)
+            with proc.stdout:
+                for line in proc.stdout:
+                    self._log(line)
         except Exception as exc:  # pragma: no cover
             self._log(f"[runner] 读取输出异常: {exc}\n")
         finally:

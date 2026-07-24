@@ -1,11 +1,15 @@
 """数据集、实验波形预处理与数据库 manifest 构建。"""
 
 from .builder import DataRecord, DatabaseBuilder
+from .case_pipeline import build_case_dataset, discover_cases
 from .dataset import (
     SPLIT_EXPERIMENT_POLICIES,
     AITemperatureDataset,
+    latest_split_manifest,
     split_manifest_file,
     split_manifest_records,
+    split_case_records,
+    write_case_split_files,
 )
 from .material_registry import (
     ensure_material_csv,
@@ -13,6 +17,20 @@ from .material_registry import (
     material_csv_path,
     register_material,
     register_materials,
+)
+from .material_collection import (
+    DEFAULT_MATERIAL_SPLIT,
+    MATERIAL_COLLECTION_FILE,
+    MATERIAL_COLLECTION_KIND,
+    attach_external_test_manifest,
+    build_material_collection,
+    build_mixed_collection_manifest,
+    discover_material_roots,
+    latest_material_collection,
+    load_material_collection,
+    resolve_collection_manifest,
+    sample_material_name,
+    validate_material_split,
 )
 from .preprocess_cache import (
     load_cached_preprocessed_waveform,
@@ -36,19 +54,37 @@ from .preprocess import (
     zscore_normalize,
     zscore_stats,
 )
+from .training_input import resolve_training_manifest_pair
 
 __all__ = [
     "AITemperatureDataset",
+    "latest_split_manifest",
     "SPLIT_EXPERIMENT_POLICIES",
     "DataRecord",
     "DatabaseBuilder",
+    "build_case_dataset",
+    "discover_cases",
     "split_manifest_file",
     "split_manifest_records",
+    "split_case_records",
+    "write_case_split_files",
     "ensure_material_csv",
     "load_material_to_idx",
     "material_csv_path",
     "register_material",
     "register_materials",
+    "DEFAULT_MATERIAL_SPLIT",
+    "MATERIAL_COLLECTION_FILE",
+    "MATERIAL_COLLECTION_KIND",
+    "attach_external_test_manifest",
+    "build_material_collection",
+    "build_mixed_collection_manifest",
+    "discover_material_roots",
+    "latest_material_collection",
+    "load_material_collection",
+    "resolve_collection_manifest",
+    "sample_material_name",
+    "validate_material_split",
     "FORCED_MODEL_ZSCORE_STEP",
     "SUPPORTED_PREPROCESS_STEPS",
     "load_cached_preprocessed_waveform",
@@ -67,4 +103,5 @@ __all__ = [
     "smooth_signal",
     "zscore_normalize",
     "zscore_stats",
+    "resolve_training_manifest_pair",
 ]
