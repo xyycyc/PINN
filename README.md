@@ -2,9 +2,9 @@
 
 ## 1. 系统概述
 
-`ai_model` 是面向多层材料、金属基复合材料和碳基/硅基复合材料的人工智能温度场重构系统。系统以超声全波形张量为直接输入，通过 CNN–LSTM–BP 融合网络学习波形传播特征与温度场之间的非线性映射，并将温度场数据监督与 PINN 物理约束相结合，实现一维、二维、稳态和瞬态温度场的智能重构。
+`ai_model` 是面向多层材料、金属基复合材料和碳基/硅基复合材料的人工智能温度场重构系统。系统以超声全波形张量为直接输入，通过 CNN–LSTM–BP 融合网络学习波形传播特征与温度场之间的非线性映射，并将温度场数据监督与基于空间差分的 PINN 物理约束相结合，实现一维、二维、稳态和瞬态温度场的智能重构。
 
-系统覆盖温度—声学参数数据库构建、超声波形导入与预处理、模型训练与保存、温度场预测、精度与效率评估、在线增量训练、参数冻结、迁移学习、多材料模型管理和结果导出。Windows 图形化界面提供完整操作入口，Python 人工智能模块与 Fortran 数值计算模块协同完成数据生成、模型训练、预测分析及全过程追溯。
+系统覆盖温度—声学参数数据库构建、超声波形导入与预处理、模型训练与保存、温度场预测、精度与效率评估、在线增量训练、迁移学习、多材料模型管理和结果导出。迁移学习架构通过参数冻结和部分权重更新实现模型对新增材料数据的适配。Windows 图形化界面提供完整操作入口，Python 人工智能模块与 Fortran 数值计算模块协同完成数据生成、模型训练、预测分析及全过程追溯。
 
 系统面向以下三类材料：
 
@@ -80,20 +80,27 @@
 
 ### 3.2 PINN 物理约束
 
-模型训练将温度场数据监督损失与 PINN 物理约束相结合，在控制预测温度与参考温度数值偏差的同时，引入温度场空间连续性、热传导规律、边界条件及合理温度范围等约束，提高重构结果的物理一致性和稳定性。
+PINN 损失采用已实现的空间差分约束：对二维温度网格分别计算两个方向的二阶有限差分，并以内部网格点离散拉普拉斯残差的平方均值作为物理残差；同时计算同一网格行内相邻温度点差值绝对值的均值，作为空间平滑先验。
 
 训练目标可概括为：
 
 $$
-L=L_{\mathrm{MSE}}+\lambda_p L_{\mathrm{phys}}+\lambda_s L_{\mathrm{smooth}}
+L=
+L_{\mathrm{field}}
++0.2L_{\mathrm{acoustic}}
++0.1L_{\mathrm{temperature}}
++0.05L_{\mathrm{smooth}}
++\lambda_pL_{\mathrm{laplacian}}
 $$
 
 其中：
 
-- \(L_{\mathrm{MSE}}\) 为温度场数据监督损失；
-- \(L_{\mathrm{phys}}\) 为 PINN 物理约束损失；
-- \(L_{\mathrm{smooth}}\) 为空间连续性和平滑约束；
-- \(\lambda_p\) 和 \(\lambda_s\) 为对应权重。
+- \(L_{\mathrm{field}}\) 为温度场监督损失；
+- \(L_{\mathrm{acoustic}}\) 为声学参数监督损失；
+- \(L_{\mathrm{temperature}}\) 为标量温度监督损失；
+- \(L_{\mathrm{smooth}}\) 为相邻网格点温度差绝对值的平滑先验；
+- \(L_{\mathrm{laplacian}}\) 为二维网格内部离散拉普拉斯残差的平方均值；
+- \(\lambda_p\) 为物理残差权重。
 
 ### 3.3 固定物理节点温度场
 
@@ -121,10 +128,10 @@ $$
 - CNN–LSTM–BP 模型训练、保存和加载；
 - 数据监督与 PINN 物理约束融合；
 - 一维、二维、稳态和瞬态温度场预测；
-- 多材料共享模型和分材料模型管理；
+- 分材料完整模型与材料路由管理；
 - 五测点精度、全场精度和分区精度分析；
 - GPU 推理计时与传统反演方法效率比较；
-- 在线增量训练、参数冻结和迁移学习；
+- 在线增量训练，以及迁移学习架构中的参数冻结和部分权重更新；
 - checkpoint、数据格式与采样索引一致性检查；
 - Windows 图形化操作和命令行批处理；
 - CSV、NPZ、JSON 和图像结果导出；
@@ -132,7 +139,7 @@ $$
 
 ## 5. 环境准备
 
-推荐使用 Python 3.10 或更高版本。在 `ai_model` 的上一级目录打开 PowerShell：
+运行环境使用 Python 3.13 或更高版本，Fortran 编译器版本不低于 14.2.0。在 `ai_model` 的上一级目录打开 PowerShell：
 
 ```powershell
 cd D:\Desktop\code
@@ -266,19 +273,13 @@ python -m ai_model.window
 
 在训练页选择数据集目录或 `material_collection.json`，设置任务维度、稳瞬态模式、材料规则名称、设备、训练轮数和早停参数。
 
-多材料任务提供两种管理方式：
-
-- 共享模型：将三类材料的训练清单合并后训练一个模型；
-- 分材料模型：为每种材料训练完整 checkpoint，并生成材料路由文件。
-
-分材料训练中，训练轮数对每种材料分别生效；共享训练中，训练轮数对应整个混合数据集。验证清单用于每轮评估和最佳模型选择，训练完成后模型按规则登记，供预测与增量训练调用。
+系统采用分材料模型与材料路由机制，根据材料类型调用对应的完整温度场重构模型。训练时为每种材料生成独立 checkpoint 和材料路由文件，训练轮数对每种材料分别生效。验证清单用于每轮评估和最佳模型选择，训练完成后模型按规则登记，供预测与增量训练调用。程序保留混合清单组织方式，供既有运行配置使用。
 
 ### 7.4 预测对比
 
 预测页可选择单材料测试清单、多材料集合或独立实验测试清单。
 
-- 共享模型根据集合清单依次预测各材料数据；
-- 分材料模型根据材料路由自动选择对应 checkpoint；
+- 系统读取材料集合和材料路由，根据样本材料类型自动选择对应的完整 checkpoint；
 - 二维输出生成完整 10,000 节点温度场；
 - 一维输出从二维场提取归一化 `x=0.5` 中心线；
 - 绘图功能生成真实值、预测值和误差对比图；
@@ -290,7 +291,7 @@ python -m ai_model.window
 
 ### 7.6 增量训练与迁移学习
 
-增量训练页加载基础 checkpoint 和新增数据清单，可配置训练轮数、设备、分支权重及参数冻结策略。新模型与基础任务建立关联，训练报告写入独立时间目录，并登记到模型规则库。
+增量训练页加载基础 checkpoint 和新增数据清单，可配置训练轮数、设备和分支权重。系统在迁移学习和模型适配过程中支持参数冻结机制，可根据目标材料和新增数据规模控制部分网络参数的更新范围。新模型与基础任务建立关联，训练报告写入独立时间目录，并登记到模型规则库。
 
 ### 7.7 一键演示
 
@@ -366,39 +367,22 @@ python -m ai_model train `
   --data-root database `
   --result-root result `
   --manifest ai_model/database/data_process/multi_material_v1_multi_material_temperature_field `
-  --train-name multi_material_temperature_v1 `
+  --train-name material_checkpoints_v1 `
   --checkpoint-name ai_model.pt `
   --rule-dimension two `
   --rule-mode steady `
   --rule-material multi_material `
   --device cuda `
   --early-stopping-patience 10 `
-  --epochs 500
+  --epochs 500 `
+  --separate-materials
 ```
 
-如需为每种材料生成独立模型，在相同命令中增加：
-
-```text
---separate-materials
-```
+该命令为集合中的每种材料生成独立 checkpoint，并生成供预测阶段使用的材料路由文件。
 
 ### 8.5 温度场预测
 
-共享多材料模型预测：
-
-```powershell
-python -m ai_model predict `
-  --data-root database `
-  --result-root result `
-  --manifest ai_model/database/data_process/multi_material_v1_multi_material_temperature_field/material_collection.json `
-  --checkpoint ai_model/result/train/checkpoint/multi_material_temperature_v1/ai_model.pt `
-  --predict-name multi_material_prediction `
-  --plots `
-  --prediction-dimension two `
-  --benchmark
-```
-
-分材料路由预测：
+分材料模型与材料路由预测：
 
 ```powershell
 python -m ai_model predict `
@@ -422,6 +406,8 @@ python -m ai_model validate `
   --result-root result `
   --manifest ai_model/database/data_process/multi_material_v1_multi_material_temperature_field/material_collection.json
 ```
+
+`validate` 入口会识别 `material_collection.json` 的集合类型，逐材料解析对应的 combined manifest，并汇总记录数、材料数、温度范围和数据校验结果。
 
 ### 8.7 在线增量训练
 
@@ -498,11 +484,13 @@ python -m ai_model demo --help
 
 - `predictions.csv`：节点编号、坐标、预测温度、参考温度、材料和界面身份；
 - `predictions.npz`：完整温度场数组；
-- `metrics.json`：全场、边界、界面、材料分区和高温区误差；
+- `metrics.json`：全场、边界、界面、材料分区、高温区的 MAE/RMSE/最大绝对误差，以及样本数、节点数、模型与 checkpoint 信息、评估耗时、参数量和内存信息；选择一维结果时增加中心轴指标，启用独立测速时增加 benchmark 字段；
 - `metadata.json`：模型、数据、采样、单位及运行环境信息；
-- `point_field_compare.png`：二维温度场对比图；
-- `axis_predictions.csv/.npz`：一维中心线预测结果；
-- `axis_compare.png`：一维真实值、预测值和误差对比图。
+- `point_field_compare.png`：启用绘图并选择二维结果时生成的温度场对比图；
+- `axis_predictions.csv/.npz`：选择一维结果时生成的中心线预测结果；
+- `axis_compare.png`：选择一维结果并启用绘图时生成的真实值、预测值和误差对比图。
+
+五个代表性测点的验收指标依据固定测点映射和节点预测结果形成独立评价记录，不作为 `metrics.json` 的固定字段。
 
 训练目录保存 checkpoint、损失曲线、训练过程记录、最佳轮次和任务统计。数据清单、模型元数据、预测日志及结果文件共同构成全过程追溯链路。
 
@@ -515,14 +503,16 @@ T_{\mathrm{ref,avg}}=\frac{1}{5}\sum_{i=1}^{5}T_{\mathrm{ref},i}
 $$
 
 $$
-T_{\mathrm{pred,avg}}=\frac{1}{5}\sum_{i=1}^{5}T_{\mathrm{pred},i}
+T_{\mathrm{AI,avg}}=\frac{1}{5}\sum_{i=1}^{5}T_{\mathrm{AI},i}
 $$
 
 $$
-E_{\mathrm{5point}}=
-\frac{|T_{\mathrm{pred,avg}}-T_{\mathrm{ref,avg}}|}
-{|T_{\mathrm{ref,avg}}|}\times100\%
+\delta_T=
+\frac{|T_{\mathrm{AI,avg}}-T_{\mathrm{ref,avg}}|}
+{\max(|T_{\mathrm{ref,avg}}|,\varepsilon)}\times100\%
 $$
+
+其中，\(\varepsilon\) 为防止参考平均温度接近零时出现零分母的正数。合同验收只使用上述“先计算五点平均温度，再计算相对误差”的公式。
 
 MAE、RMSE、最大绝对误差、中心化 RMSE、空间相关系数、边界误差、界面误差、材料分区误差和高温区误差用于分析温度场空间分布质量和定位局部误差。
 
@@ -573,7 +563,7 @@ $env:PYTHONIOENCODING = "utf-8"
 - 一维、二维、稳态和瞬态温度场重构；
 - 10,000 个固定物理节点完整二维温度场；
 - 二维温度场固定中心线的一维结果；
-- 在线增量训练、参数冻结和迁移学习；
+- 在线增量训练，以及迁移学习架构中的参数冻结和部分权重更新；
 - GPU 快速推理和效率统计；
 - Windows 图形化界面；
 - Python 人工智能模块与 Fortran 数值计算模块协同；

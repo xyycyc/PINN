@@ -12,7 +12,7 @@
 
 三类仿真波形—温度场配对数据分别为 1000 组、200 组和 200 组，合计 1400 组，温度范围为 300～1500 K。实验测试对象为两层 W30Mo70 钨钼合金多层材料，实验采集数据不少于 20 组。
 
-人工智能模型采用 CNN–LSTM–BP 双分支融合结构，将温度场数据监督与 PINN 物理约束相结合，输出 10,000 个固定物理节点上的完整二维温度场。一维温度结果由二维温度场归一化 `x=0.5` 的固定中心线提取。系统通过 Windows 图形化界面组织建库、训练、预测、校验和在线增量训练，并由 Python 人工智能模块与 Fortran 数值计算模块协同完成全过程处理。
+人工智能模型采用 CNN–LSTM–BP 双分支融合结构，将温度场数据监督与空间差分 PINN 物理约束相结合。物理约束采用二维网格内部离散拉普拉斯残差，并配合相邻网格点温度差绝对值的平滑先验。模型输出 10,000 个固定物理节点上的完整二维温度场，一维温度结果由二维温度场归一化 `x=0.5` 的固定中心线提取。系统通过 Windows 图形化界面组织建库、训练、预测、校验和在线增量训练，并由 Python 人工智能模块与 Fortran 数值计算模块协同完成全过程处理。
 
 ## 2. 验收主指标
 
@@ -27,26 +27,27 @@ T_{\mathrm{ref,avg}}=
 $$
 
 $$
-T_{\mathrm{pred,avg}}=
-\frac{T_{\mathrm{pred},1}+T_{\mathrm{pred},2}+T_{\mathrm{pred},3}
-+T_{\mathrm{pred},4}+T_{\mathrm{pred},5}}{5}
+T_{\mathrm{AI,avg}}=
+\frac{T_{\mathrm{AI},1}+T_{\mathrm{AI},2}+T_{\mathrm{AI},3}
++T_{\mathrm{AI},4}+T_{\mathrm{AI},5}}{5}
 $$
 
 再计算五点平均温度相对误差：
 
 $$
-E_{\mathrm{5point}}=
-\frac{|T_{\mathrm{pred,avg}}-T_{\mathrm{ref,avg}}|}
-{|T_{\mathrm{ref,avg}}|}\times100\%
+\delta_T=
+\frac{|T_{\mathrm{AI,avg}}-T_{\mathrm{ref,avg}}|}
+{\max(|T_{\mathrm{ref,avg}}|,\varepsilon)}\times100\%
 $$
 
 其中：
 
 - \(T_{\mathrm{ref},i}\) 为第 \(i\) 个代表性测点的参考温度；
-- \(T_{\mathrm{pred},i}\) 为第 \(i\) 个代表性测点的预测温度；
+- \(T_{\mathrm{AI},i}\) 为第 \(i\) 个代表性测点的 AI 预测温度；
 - \(T_{\mathrm{ref,avg}}\) 为五个测点的参考平均温度；
-- \(T_{\mathrm{pred,avg}}\) 为五个测点的预测平均温度；
-- \(E_{\mathrm{5point}}\) 为合同验收主指标。
+- \(T_{\mathrm{AI,avg}}\) 为五个测点的 AI 预测平均温度；
+- \(\varepsilon\) 为防止参考平均温度接近零时出现零分母的正数；
+- \(\delta_T\) 为合同验收主指标。
 
 四类工况的正式结果为：
 
@@ -59,24 +60,17 @@ $$
 
 四类工况的五点平均温度相对误差均小于 10%。
 
-### 2.2 单点相对误差与辅助平均值
+### 2.2 单点相对误差明细
 
 单个测点的相对误差用于观察测点误差分布：
 
 $$
 E_i=
-\frac{|T_{\mathrm{pred},i}-T_{\mathrm{ref},i}|}
+\frac{|T_{\mathrm{AI},i}-T_{\mathrm{ref},i}|}
 {|T_{\mathrm{ref},i}|}\times100\%
 $$
 
-单点相对误差平均值定义为：
-
-$$
-\overline{E}_{\mathrm{point}}=
-\frac{1}{5}\sum_{i=1}^{5}E_i
-$$
-
-\(\overline{E}_{\mathrm{point}}\) 属于辅助诊断指标，用于分析五个测点误差的离散程度。合同验收采用 \(E_{\mathrm{5point}}\)，即“先计算五点平均温度，再计算相对误差”的统一口径。
+各测点的 \(E_i\) 作为局部误差明细保留，不再汇总为第二种平均误差指标。合同验收只采用 \(\delta_T\)，即“先计算五点平均温度，再计算相对误差”的统一公式。
 
 ## 3. 代表性测点
 
@@ -302,11 +296,13 @@ $$
 
 - `predictions.csv`：每个样本、每个固定节点的预测温度、参考温度、坐标、材料和界面身份；
 - `predictions.npz`：完整预测温度场和参考温度场数组；
-- `metrics.json`：五点指标、全场指标、分区指标和性能统计；
+- `metrics.json`：全场、边界、界面、材料分区、高温区的 MAE/RMSE/最大绝对误差，以及样本数、节点数、模型与 checkpoint 信息、评估耗时、参数量和内存信息；选择一维结果时增加中心轴指标，启用独立测速时增加 benchmark 字段；
 - `metadata.json`：模型、数据、采样索引、温度单位及运行环境；
-- `point_field_compare.png`：二维温度场对比图；
-- `axis_predictions.csv/.npz`：一维固定中心线预测结果；
-- `axis_compare.png`：一维真实值、预测值和误差对比图。
+- `point_field_compare.png`：启用绘图并选择二维结果时生成的温度场对比图；
+- `axis_predictions.csv/.npz`：选择一维结果时生成的固定中心线预测结果；
+- `axis_compare.png`：选择一维结果并启用绘图时生成的真实值、预测值和误差对比图。
+
+五个代表性测点的验收指标依据固定测点映射和节点预测结果形成独立评价记录，不作为 `metrics.json` 的固定字段。
 
 模型 checkpoint、测试数据清单、固定采样索引、预处理配置、预测日志和输出结果共同构成可追溯的评估记录。在线增量训练和迁移学习任务采用独立模型版本与报告目录，便于开展同口径对比。
 
