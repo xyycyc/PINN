@@ -1,3 +1,5 @@
+"""Training and incremental-update workflows for legacy and fixed-node models."""
+
 from __future__ import annotations
 
 import json
@@ -77,6 +79,8 @@ def _finite_difference_second_y(field: torch.Tensor) -> torch.Tensor:
 
 
 class ReconstructionTrainer:
+    """Train one shared model or a router-managed set of material models."""
+
     def __init__(self, config: AIModelConfig | None = None):
         self.config = config or AIModelConfig()
         if int(self.config.epochs) <= 0:
@@ -91,6 +95,7 @@ class ReconstructionTrainer:
         self.device = _default_device(self.config)
 
     def build_model(self) -> AIReconstructionModel:
+        """Construct the legacy grid reconstruction model from runtime config."""
         return AIReconstructionModel(
             waveform_length=self.config.waveform_length,
             hidden_dim=self.config.hidden_dim,
@@ -234,6 +239,7 @@ class ReconstructionTrainer:
         checkpoint_name: str = "ai_model.pt",
         train_name: str | None = None,
     ) -> Path:
+        """Train the model selected by the manifest schema and save its artifacts."""
         checkpoint_name = normalize_pt_filename(
             checkpoint_name,
             label="checkpoint 文件名",
@@ -753,6 +759,7 @@ class OnlineUpdater:
         output_name: str | None = None,
         train_name: str | None = None,
     ) -> Path:
+        """Fine-tune a compatible checkpoint and persist a new immutable artifact."""
         del train_name  # 增量训练目录固定为基础 checkpoint 父目录名
         base_checkpoint = Path(checkpoint_path).resolve()
 

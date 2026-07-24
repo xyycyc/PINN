@@ -1,3 +1,5 @@
+"""Dataset loading, leakage-safe splitting, and waveform preprocessing contracts."""
+
 from __future__ import annotations
 
 import json
@@ -163,6 +165,7 @@ def split_manifest_file(
     train_output_name: str = "train_manifest.json",
     test_output_name: str = "test_manifest.json",
 ) -> tuple[Path, Path, dict[str, Any]]:
+    """Split a legacy manifest and persist reproducible train/test artifacts."""
     manifest_path = Path(manifest_path)
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     records = payload.get("records", [])
@@ -206,7 +209,20 @@ def split_case_records(records: list[dict[str, Any]], *, seed: int = 42,
                        train_ratio: float = 0.7, validation_ratio: float = 0.15
                        ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
     """Deterministically split unique physical cases and reject derived-wave leakage."""
-    if not 0 < train_ratio < 1 or not 0 <= validation_ratio < 1 or train_ratio + validation_ratio >= 1:
+    test_ratio = 1.0 - float(train_ratio) - float(validation_ratio)
+    if abs(test_ratio) <= 1e-9:
+        test_ratio = 0.0
+    ratios = {
+        "train": float(train_ratio),
+        "validation": float(validation_ratio),
+        "test": float(test_ratio),
+    }
+    if (
+        not 0.0 < ratios["train"] <= 1.0
+        or not 0.0 <= ratios["validation"] <= 1.0
+        or not 0.0 <= ratios["test"] <= 1.0
+        or abs(sum(ratios.values()) - 1.0) > 1e-9
+    ):
         raise ValueError("train_ratio/validation_ratio 无效")
     groups: dict[str, list[dict[str, Any]]] = {}
     for record in records:
@@ -216,24 +232,55 @@ def split_case_records(records: list[dict[str, Any]], *, seed: int = 42,
         groups.setdefault(case_key, []).append(record)
     keys = np.array(sorted(groups), dtype=object)
     np.random.default_rng(seed).shuffle(keys)
-    n = len(keys); n_train = int(round(n * train_ratio)); n_val = int(round(n * validation_ratio))
-    if n >= 3:
-        minimum_validation = 1 if validation_ratio > 0 else 0
-        n_train = min(max(n_train, 1), n - 1 - minimum_validation)
-        n_val = min(
-            max(n_val, minimum_validation),
-            n - n_train - 1,
-        )
-    key_sets = {"train": set(keys[:n_train]), "validation": set(keys[n_train:n_train+n_val]),
-                "test": set(keys[n_train+n_val:])}
+    split_names = ("train", "validation", "test")
+    n = len(keys)
+    positive_splits = [name for name in split_names if ratios[name] > 0.0]
+
+    raw_counts = {name: n * ratios[name] for name in split_names}
+    counts = {name: int(np.floor(raw_counts[name])) for name in split_names}
+    remaining = n - sum(counts.values())
+    for name in sorted(
+        split_names,
+        key=lambda item: (raw_counts[item] - counts[item], ratios[item], item),
+        reverse=True,
+    )[:remaining]:
+        counts[name] += 1
+
+    # Small fixtures or newly collected materials may have fewer cases than
+    # requested non-zero splits. Keep those cases in the highest-priority
+    # proportional buckets instead of forcing synthetic validation/test data.
+    if n >= len(positive_splits):
+        for name in positive_splits:
+            if counts[name] > 0:
+                continue
+            donors = sorted(
+                (
+                    candidate
+                    for candidate in split_names
+                    if counts[candidate] > (1 if ratios[candidate] > 0.0 else 0)
+                ),
+                key=lambda candidate: (counts[candidate], ratios[candidate], candidate),
+                reverse=True,
+            )
+            if not donors:
+                raise ValueError(f"无法为非零划分 {name} 分配 case")
+            counts[donors[0]] -= 1
+            counts[name] += 1
+
+    n_train = counts["train"]
+    n_val = counts["validation"]
+    key_sets = {
+        "train": set(keys[:n_train]),
+        "validation": set(keys[n_train:n_train + n_val]),
+        "test": set(keys[n_train + n_val:]),
+    }
     result = {name: [item for key in sorted(values) for item in groups[str(key)]] for name, values in key_sets.items()}
     intersections = {"train_validation": sorted(key_sets["train"] & key_sets["validation"]),
                      "train_test": sorted(key_sets["train"] & key_sets["test"]),
                      "validation_test": sorted(key_sets["validation"] & key_sets["test"])}
     if any(intersections.values()):
         raise RuntimeError(f"case 泄漏检查失败: {intersections}")
-    return result, {"split_version": 1, "seed": seed, "ratios": {"train": train_ratio,
-            "validation": validation_ratio, "test": 1-train_ratio-validation_ratio},
+    return result, {"split_version": 1, "seed": seed, "ratios": ratios,
             "case_counts": {k: len(v) for k, v in key_sets.items()}, "leakage": intersections}
 
 
@@ -319,6 +366,8 @@ def write_case_split_files(manifest_path: str | Path, *, seed: int = 42,
 
 
 class AITemperatureDataset(Dataset):
+    """Load legacy grids or fixed-node fields under one training interface."""
+
     def __init__(self, manifest_path: str | Path, config: AIModelConfig | None = None):
         manifest_path = Path(manifest_path)
         data = json.loads(manifest_path.read_text(encoding="utf-8"))

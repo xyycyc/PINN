@@ -29,6 +29,8 @@ NO_RULE_PLACEHOLDER = "暂无"
 
 
 class PredictTab(BaseCommandTab):
+    """Configure checkpoint or material-router prediction and comparison artifacts."""
+
     title = "预测对比"
     description = (
         "基于训练好的模型检查点对清单中的样本做推理，在输出目录生成预测结果、"
@@ -148,6 +150,20 @@ class PredictTab(BaseCommandTab):
         self.rule_dimension.combo.configure(values=dimensions)
         if dimensions and self.rule_dimension.get() not in dimensions:
             self.rule_dimension.set(dimensions[0])
+        self._update_prediction_dimension_options()
+
+    def _update_prediction_dimension_options(self) -> None:
+        if not hasattr(self, "prediction_dimension"):
+            return
+        source_dimension = (
+            "two"
+            if hasattr(self, "auto_material_routing") and self.auto_material_routing.get()
+            else str(self.rule_dimension.get() or "one")
+        )
+        allowed = ["two", "one"] if source_dimension == "two" else ["one"]
+        self.prediction_dimension.combo.configure(values=allowed, state="readonly")
+        if self.prediction_dimension.get() not in allowed:
+            self.prediction_dimension.set(allowed[0])
 
     def _update_rule_mode_options(self) -> None:
         modes = available_modes(
@@ -181,6 +197,7 @@ class PredictTab(BaseCommandTab):
         )
 
     def build_form(self, parent: tk.Misc) -> None:
+        """Create manifest, model routing, output, plot, and runtime controls."""
         section = Section(parent, "输入 / 输出")
         section.pack(fill="x", padx=PADX, pady=PADY)
 
@@ -218,7 +235,12 @@ class PredictTab(BaseCommandTab):
             default=bool(self._cfg_value("auto_material_routing", False)),
         )
         self.auto_material_routing.pack(fill="x", padx=PADX, pady=PADY)
-        self.auto_material_routing.check.configure(command=self._sync_routed_manifest)
+        self.auto_material_routing.check.configure(
+            command=lambda: (
+                self._sync_routed_manifest(),
+                self._update_prediction_dimension_options(),
+            )
+        )
         self._sync_routed_manifest()
         self.material_router = FileEntry(
             rule_section,
@@ -286,6 +308,15 @@ class PredictTab(BaseCommandTab):
 
         plot_section = Section(parent, "可视化 / 测速")
         plot_section.pack(fill="x", padx=PADX, pady=PADY)
+
+        self.prediction_dimension = LabeledCombobox(
+            plot_section,
+            "预测输出维度",
+            ["two", "one"],
+            default=str(self._cfg_value("prediction_dimension", "two")),
+            hint="二维模型可选 two/one；one 提取归一化 x=0.5 中心轴；一维模型只能选 one",
+        )
+        self.prediction_dimension.pack(fill="x", padx=PADX, pady=PADY)
 
         self.enable_plots = LabeledCheck(
             plot_section,
@@ -359,7 +390,11 @@ class PredictTab(BaseCommandTab):
         )
         self.rule_dimension.combo.bind(
             "<<ComboboxSelected>>",
-            lambda _e: (self._update_rule_mode_options(), self._sync_checkpoint_from_rule()),
+            lambda _e: (
+                self._update_rule_mode_options(),
+                self._sync_checkpoint_from_rule(),
+                self._update_prediction_dimension_options(),
+            ),
         )
         self.rule_mode.combo.bind("<<ComboboxSelected>>", lambda _e: self._sync_checkpoint_from_rule())
         self._refresh_rule_rows()
@@ -387,9 +422,16 @@ class PredictTab(BaseCommandTab):
             self.manifest.set(value)
 
     def validate_form(self) -> None:
+        """Validate model routing and output-dimension compatibility."""
         active_manifest = self._active_manifest()
         if not active_manifest:
             raise ValueError("请填写待预测清单路径")
+        if (
+            not self.auto_material_routing.get()
+            and self.rule_dimension.get() == "one"
+            and self.prediction_dimension.get() != "one"
+        ):
+            raise ValueError("一维模型只能选择 one（一维）预测输出")
         if self.auto_manifest.get():
             self.manifest.set(active_manifest)
         if self.auto_material_routing.get():
@@ -408,6 +450,7 @@ class PredictTab(BaseCommandTab):
             validate_artifact_basename(self.predict_name.get(), label="推理名称")
 
     def compose_command(self) -> list[str]:
+        """Translate the selected prediction workflow into a CLI command."""
         manifest = self._active_manifest()
         if self.auto_manifest.get():
             self.manifest.set(manifest)
@@ -453,6 +496,9 @@ class PredictTab(BaseCommandTab):
             args.append("--plots")
         else:
             args.append("--no-plots")
+        args.extend(
+            ["--prediction-dimension", str(self.prediction_dimension.get() or "one")]
+        )
         n = self.num_field_samples.get()
         if n is not None:
             args.extend(["--num-field-samples", str(n)])
@@ -474,6 +520,7 @@ class PredictTab(BaseCommandTab):
         return self.python_module_cmd("ai_model", *args)
 
     def to_settings_section(self) -> dict[str, Any]:
+        """Serialize the prediction form without executing inference."""
         data: dict[str, Any] = {
             "manifest": self.manifest.get(),
             "auto_manifest": bool(self.auto_manifest.get()),
@@ -485,6 +532,7 @@ class PredictTab(BaseCommandTab):
             "rule_material": self.rule_material.get(),
             "output_dir": self.output_dir.get(),
             "predict_name": self.predict_name.get(),
+            "prediction_dimension": self.prediction_dimension.get(),
             "enable_plots": bool(self.enable_plots.get()),
             "num_field_samples": self.num_field_samples.get(),
             "enable_benchmark": bool(self.enable_benchmark.get()),

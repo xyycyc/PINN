@@ -25,6 +25,8 @@ from .base import BaseCommandTab
 
 
 class TrainTab(BaseCommandTab):
+    """Configure shared or per-material model training from the GUI."""
+
     title = "训练模型"
     description = (
         "选择数据集文件夹，使用 train manifest 反向传播并用 validation manifest 逐轮评估；"
@@ -53,6 +55,7 @@ class TrainTab(BaseCommandTab):
         return str(self._resolve_data_root_path())
 
     def build_form(self, parent: tk.Misc) -> None:
+        """Create dataset, routing, rule, runtime, and artifact controls."""
         section = Section(parent, "数据与清单")
         section.pack(fill="x", padx=PADX, pady=PADY)
 
@@ -150,6 +153,7 @@ class TrainTab(BaseCommandTab):
         self.early_stopping_patience.pack(fill="x", padx=PADX, pady=PADY)
 
     def compose_command(self) -> list[str]:
+        """Translate the form into a versioned training command."""
         dim, mode, material = validate_rule_triplet(
             self.rule_dimension.get(),
             self.rule_mode.get(),
@@ -197,6 +201,7 @@ class TrainTab(BaseCommandTab):
             self.manifest.set(value)
 
     def validate_form(self) -> None:
+        """Validate manifest compatibility and required runtime values."""
         manifest = self._manifest_for_validation()
         if not manifest:
             raise ValueError("请选择训练数据集文件夹。")
@@ -232,6 +237,7 @@ class TrainTab(BaseCommandTab):
         )
 
     def to_settings_section(self) -> dict[str, Any]:
+        """Serialize user-visible training options for the next session."""
         data: dict[str, Any] = {
             "manifest": self.manifest.get(),
             "auto_manifest": bool(self.auto_manifest.get()),

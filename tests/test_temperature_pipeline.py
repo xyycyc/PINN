@@ -5,9 +5,20 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 from ai_model.data_process.dataset import AITemperatureDataset, split_case_records, write_case_split_files
-from ai_model.data_process.case_pipeline import build_case_dataset, crop_waveform_tail, discover_cases
+from ai_model.data_process.case_adapters import (
+    DIRECT_CASE_FORMAT,
+    STABLE_NAME_MATERIAL_IDS,
+    adapt_case_source,
+)
+from ai_model.data_process.case_pipeline import (
+    build_case_dataset,
+    crop_waveform_tail,
+    discover_cases,
+    normalize_waveform_frame,
+)
 from ai_model.data_process.mesh_sampling import deterministic_sample, read_mesh_csv
 from ai_model.data_process.temperature_field import CaseKey, select_waveform, validate_temperature_field
 from ai_model.data_process.training_input import resolve_training_manifest_pair
@@ -32,6 +43,7 @@ from ai_model.model.point_field import (
     DirectPointFieldModel,
     weighted_temperature_loss,
 )
+from ai_model.model.predict import _center_x_axis_indices
 import json
 import torch
 
@@ -112,6 +124,7 @@ class TemperatureContractTests(unittest.TestCase):
                 }],
             )
             self.assertEqual(payload["records"][0]["material_key"], "wumu")
+            self.assertNotIn("source_format", payload["records"][0]["meta"])
             waveform = np.load(root / "output" / payload["records"][0]["waveform_path"])
             np.testing.assert_array_equal(waveform, np.array([0.0, 1.0], dtype=np.float32))
             self.assertEqual(payload["records"][0]["meta"]["waveform_crop_length"], 2)
@@ -163,6 +176,7 @@ class TemperatureContractTests(unittest.TestCase):
             self.assertNotIn("layer_2", roots)
             self.assertEqual(sample_material_name("wumu"), "钨钼多层材料")
             self.assertEqual(validate_material_split(0.6, 0.1, 0.3), (0.6, 0.1, 0.3))
+            self.assertEqual(validate_material_split(0.9, 0.1, 0.0), (0.9, 0.1, 0.0))
 
     def test_multi_material_build_applies_independent_splits_and_folder_routes(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -308,6 +322,194 @@ class TemperatureContractTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "对应多个材料名称"):
                 read_mesh_csv(csv_path)
 
+    def test_direct_export_normalizes_invalid_material_ids_stably(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            def write_direct_case(index: int, rows: list[tuple[str, int]]) -> Path:
+                case_name = f"case_{index:03d}_T0{300 + index:03d}p000K"
+                case = root / "raw" / case_name
+                configs = case / "configs"
+                thermal_dir = case / "heat" / "thermomechanical_steady" / "csv"
+                ultrasonic = case / "ultrasonic"
+                configs.mkdir(parents=True)
+                thermal_dir.mkdir(parents=True)
+                ultrasonic.mkdir(parents=True)
+                thermal_path = thermal_dir / "thermomechanical_steady_nodes.csv"
+                lines = [
+                    "node_id,x,y,T,thermal_material_name",
+                    *[
+                        f"{node_id},{(node_id - 1) % 2},{(node_id - 1) // 2},"
+                        f"{300 + index},{name}"
+                        for name, node_id in rows
+                    ],
+                ]
+                thermal_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                (configs / f"{case_name}_ultrasonic_config.json").write_text(
+                    json.dumps(
+                        {
+                            "io": {
+                                "temperature_csv_path": (
+                                    f"archive/direct/{case_name}/heat/"
+                                    "thermomechanical_steady/csv/"
+                                    "thermomechanical_steady_nodes.csv"
+                                )
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                (ultrasonic / "receiver_signal.csv").write_text(
+                    "step,time_s,signal\n0,0,0\n1,1,1\n2,2,2\n3,3,3\n",
+                    encoding="utf-8",
+                )
+                return case
+
+            first = write_direct_case(
+                0,
+                [("Matrix", 1), ("Matrix", 2), ("Particle", 3), ("Particle", 4)],
+            )
+            second = write_direct_case(
+                1,
+                [("Matrix", 1), ("Matrix", 2), ("Particle", 3), ("Particle", 4)],
+            )
+            adapted_first = adapt_case_source(first)
+            adapted_second = adapt_case_source(second)
+            self.assertEqual(adapted_first.source_format, DIRECT_CASE_FORMAT)
+            self.assertEqual(adapted_first.case_key, f"flat/{first.name}")
+            first_mesh = read_mesh_csv(
+                adapted_first.thermal_path,
+                material_id_policy=adapted_first.material_id_policy,
+            )
+            second_mesh = read_mesh_csv(
+                adapted_second.thermal_path,
+                material_id_policy=adapted_second.material_id_policy,
+            )
+            first_ids = {
+                item["material_name"]: item["material_id"]
+                for item in first_mesh["constituent_material_catalog"]
+            }
+            second_ids = {
+                item["material_name"]: item["material_id"]
+                for item in second_mesh["constituent_material_catalog"]
+            }
+            self.assertEqual(first_ids, second_ids)
+            self.assertNotEqual(first_ids["Matrix"], first_ids["Particle"])
+            self.assertNotIn(-1, first_ids.values())
+
+            manifest = build_case_dataset(
+                root / "raw",
+                root / "output",
+                target_points=4,
+                waveform_crop_length=2,
+                sample_material_key="direct_material",
+            )
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            self.assertEqual(len(payload["records"]), 2)
+            self.assertEqual(
+                payload["records"][0]["meta"]["source_format"],
+                DIRECT_CASE_FORMAT,
+            )
+            self.assertEqual(
+                payload["records"][0]["meta"]["material_id_policy"],
+                STABLE_NAME_MATERIAL_IDS,
+            )
+
+    def test_direct_export_keeps_valid_material_id_conflicts_strict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = Path(tmp) / "mesh.csv"
+            csv_path.write_text(
+                "node_id,x,y,T,thermal_material_id,thermal_material_name\n"
+                "1,0,0,300,7,Matrix\n"
+                "2,1,0,301,7,Particle\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "对应多个材料名称"):
+                read_mesh_csv(
+                    csv_path,
+                    material_id_policy=STABLE_NAME_MATERIAL_IDS,
+                )
+
+    def test_waveform_layouts_normalize_without_padding_or_resampling(self):
+        np.testing.assert_array_equal(
+            normalize_waveform_frame(pd.DataFrame({"signal": [1.0, 2.0, 3.0]})),
+            np.array([1.0, 2.0, 3.0], dtype=np.float32),
+        )
+        np.testing.assert_array_equal(
+            normalize_waveform_frame(pd.DataFrame({"c0": [1.0], "c1": [2.0]})),
+            np.array([1.0, 2.0], dtype=np.float32),
+        )
+        np.testing.assert_array_equal(
+            normalize_waveform_frame(
+                pd.DataFrame(
+                    {
+                        "step": [0, 1],
+                        "time_s": [0.0, 0.1],
+                        "first": [3.0, 4.0],
+                        "second": [8.0, 9.0],
+                    }
+                )
+            ),
+            np.array([3.0, 4.0], dtype=np.float32),
+        )
+
+    def test_pairing_failure_records_paths_stage_and_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            case = root / "raw" / "case_000_T0300p000K"
+            configs = case / "configs"
+            thermal_dir = case / "heat" / "thermomechanical_steady" / "csv"
+            ultrasonic = case / "ultrasonic"
+            configs.mkdir(parents=True)
+            thermal_dir.mkdir(parents=True)
+            ultrasonic.mkdir(parents=True)
+            (thermal_dir / "thermomechanical_steady_nodes.csv").write_text(
+                "node_id,x,y,T,thermal_material_name\n1,0,0,300,Matrix\n",
+                encoding="utf-8",
+            )
+            (configs / "case_ultrasonic_config.json").write_text(
+                json.dumps(
+                    {
+                        "io": {
+                            "temperature_csv_path": (
+                                "archive/case_999_T0300p000K/"
+                                "thermomechanical_steady_nodes.csv"
+                            )
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (ultrasonic / "receiver_signal.csv").write_text(
+                "signal\n0\n1\n",
+                encoding="utf-8",
+            )
+            output = root / "output"
+            with self.assertRaisesRegex(ValueError, "未静默跳过"):
+                build_case_dataset(
+                    root / "raw",
+                    output,
+                    target_points=1,
+                    waveform_crop_length=1,
+                    sample_material_key="direct_material",
+                )
+            failures = json.loads(
+                (output / "pairing_failures.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(len(failures), 1)
+            self.assertEqual(failures[0]["stage"], "source_adaptation")
+            self.assertEqual(failures[0]["error_type"], "ValueError")
+            self.assertEqual(failures[0]["source_format"], DIRECT_CASE_FORMAT)
+            for field in (
+                "case_id",
+                "material",
+                "source_format",
+                "thermal_path",
+                "waveform_path",
+                "error_message",
+            ):
+                self.assertIn(field, failures[0])
+
     def test_validation_counts_sample_material_catalog_not_constituent_layers(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -393,6 +595,59 @@ class TemperatureContractTests(unittest.TestCase):
         self.assertEqual(counts, [50, 50])
         self.assertAlmostEqual(totals[0], totals[1], delta=2.0)
 
+    def test_direct_sampling_overflow_keeps_complete_interface_pairs(self):
+        boundary_xy = np.array(
+            [[0, 0], [1, 0], [0, 1], [1, 1]],
+            dtype=np.float64,
+        )
+        interface_xy = np.repeat(
+            np.array(
+                [[0.2, 0.2], [0.4, 0.2], [0.6, 0.4],
+                 [0.2, 0.6], [0.4, 0.8], [0.8, 0.6]],
+                dtype=np.float64,
+            ),
+            2,
+            axis=0,
+        )
+        xy = np.vstack((boundary_xy, interface_xy))
+        count = len(xy)
+        mesh = {
+            "node_ids": np.arange(1, count + 1, dtype=np.int64),
+            "coordinates_m": xy,
+            "temperature_k": np.full(count, 300, dtype=np.float32),
+            "material_ids": np.r_[
+                np.ones(4, dtype=np.int32),
+                np.tile(np.array([1, 2], dtype=np.int32), 6),
+            ],
+            "interface_side": np.r_[
+                np.zeros(4, dtype=np.int32),
+                np.tile(np.array([1, 2], dtype=np.int32), 6),
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "超过目标点数"):
+            deterministic_sample(mesh, target_points=10, seed=42)
+        first = deterministic_sample(
+            mesh,
+            target_points=10,
+            seed=42,
+            interface_overflow_policy="paired_stratified",
+        )
+        second = deterministic_sample(
+            mesh,
+            target_points=10,
+            seed=42,
+            interface_overflow_policy="paired_stratified",
+        )
+        np.testing.assert_array_equal(first["node_ids"], second["node_ids"])
+        selected_interface = first["coordinates_m"][first["interface_side"] > 0]
+        _coordinates, selected_counts = np.unique(
+            selected_interface,
+            axis=0,
+            return_counts=True,
+        )
+        self.assertTrue(np.all(selected_counts == 2))
+        self.assertEqual(len(first["node_ids"]), 10)
+
     def test_waveform_policy_never_selects_motion(self):
         with tempfile.TemporaryDirectory() as tmp:
             case = Path(tmp)/"worker_01"/"case_0001_T0300p000K"; ultra=case/"ultrasonic"; ultra.mkdir(parents=True)
@@ -408,6 +663,42 @@ class TemperatureContractTests(unittest.TestCase):
         sets = [{x["case_key"] for x in splits[name]} for name in ("train", "validation", "test")]
         self.assertFalse((sets[0] & sets[1]) | (sets[0] & sets[2]) | (sets[1] & sets[2]))
         self.assertFalse(any(report["leakage"].values()))
+
+    def test_case_split_allows_training_and_validation_without_generated_test(self):
+        records = [
+            {
+                "case_key": f"worker_01/case_{i:04d}_T0300p000K",
+                "waveform_version": "raw",
+            }
+            for i in range(10)
+        ]
+        splits, report = split_case_records(
+            records,
+            seed=42,
+            train_ratio=0.8,
+            validation_ratio=0.2,
+        )
+        self.assertEqual(len(splits["test"]), 0)
+        self.assertEqual(report["case_counts"]["test"], 0)
+        self.assertEqual(
+            len(splits["train"]) + len(splits["validation"]),
+            len(records),
+        )
+
+    def test_two_dimensional_center_axis_extracts_normalized_x_half(self):
+        coordinates = np.asarray(
+            [
+                (x, y)
+                for x in (0.0, 0.5, 1.0)
+                for y in (0.0, 0.25, 0.5, 0.75, 1.0)
+            ],
+            dtype=np.float32,
+        )
+        indices, normalized_y, metadata = _center_x_axis_indices(coordinates)
+        self.assertEqual(len(indices), 5)
+        self.assertTrue(np.allclose(coordinates[indices, 0], 0.5))
+        self.assertTrue(np.allclose(normalized_y, np.linspace(0.0, 1.0, 5)))
+        self.assertAlmostEqual(float(metadata["selected_x_normalized"]), 0.5)
 
     def test_point_dataset_and_model_end_to_end_contract(self):
         with tempfile.TemporaryDirectory() as tmp:

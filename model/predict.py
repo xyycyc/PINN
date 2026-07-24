@@ -1,3 +1,5 @@
+"""Checkpoint-compatible prediction, routing, metrics, plots, and artifacts."""
+
 from __future__ import annotations
 
 import csv
@@ -175,6 +177,231 @@ def _plot_point_field_triptych(
     plt.close(fig)
 
 
+def _draw_axis_triptych_row(
+    axes: np.ndarray,
+    *,
+    axis_y: np.ndarray,
+    true_k: np.ndarray,
+    predicted_k: np.ndarray,
+    node_ids: np.ndarray | None = None,
+    interface_side: np.ndarray | None = None,
+) -> None:
+    y = np.asarray(axis_y, dtype=float)
+    true_values = np.asarray(true_k, dtype=float)
+    predicted_values = np.asarray(predicted_k, dtype=float)
+    absolute_error = np.abs(predicted_values - true_values)
+    series = (
+        (true_values, "true K", "temperature K", "tab:blue"),
+        (predicted_values, "predicted K", "temperature K", "tab:orange"),
+        (absolute_error, "error K", "error K", "tab:red"),
+    )
+    for axis, (values, title, ylabel, color) in zip(axes, series):
+        axis.plot(y, values, color=color, marker="o", markersize=2.0, linewidth=1.0)
+        axis.set_title(title)
+        axis.set_xlabel("normalized y")
+        axis.set_ylabel(ylabel)
+        axis.grid(True, linestyle="--", alpha=0.3)
+
+    if node_ids is None or len(node_ids) != len(y):
+        return
+    annotation_positions: set[int] = {0, max(len(y) - 1, 0)}
+    if interface_side is not None and len(interface_side) == len(y):
+        interface_positions = np.flatnonzero(np.asarray(interface_side) > 0)
+        if interface_positions.size:
+            step = max(1, int(np.ceil(interface_positions.size / 4)))
+            annotation_positions.update(int(item) for item in interface_positions[::step])
+    for position in sorted(annotation_positions):
+        if not 0 <= position < len(y):
+            continue
+        label = f"N{int(node_ids[position])}"
+        for axis, values in zip(axes, (true_values, predicted_values, absolute_error)):
+            axis.annotate(
+                label,
+                (float(y[position]), float(values[position])),
+                xytext=(3, 3),
+                textcoords="offset points",
+                fontsize=6,
+            )
+
+
+def _plot_axis_triptych(
+    sample_id: str,
+    axis_y: np.ndarray,
+    true_k: np.ndarray,
+    predicted_k: np.ndarray,
+    output_path: Path,
+    *,
+    node_ids: np.ndarray | None = None,
+    interface_side: np.ndarray | None = None,
+) -> None:
+    if plt is None:
+        return
+    fig, axes = plt.subplots(1, 3, figsize=(13, 4))
+    _draw_axis_triptych_row(
+        np.asarray(axes),
+        axis_y=axis_y,
+        true_k=true_k,
+        predicted_k=predicted_k,
+        node_ids=node_ids,
+        interface_side=interface_side,
+    )
+    fig.suptitle(sample_id, fontsize=12)
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+
+
+def _plot_axis_comparison_grid(
+    sample_ids: list[str],
+    axis_y: np.ndarray,
+    true_k: np.ndarray,
+    predicted_k: np.ndarray,
+    output_path: Path,
+    *,
+    node_ids: np.ndarray | None = None,
+    interface_side: np.ndarray | None = None,
+) -> None:
+    if plt is None or not sample_ids:
+        return
+    row_count = len(sample_ids)
+    fig, axes = plt.subplots(row_count, 3, figsize=(13, max(4.0, 3.6 * row_count)))
+    axes_2d = np.asarray(axes).reshape(row_count, 3)
+    for row, sample_id in enumerate(sample_ids):
+        _draw_axis_triptych_row(
+            axes_2d[row],
+            axis_y=axis_y,
+            true_k=true_k[row],
+            predicted_k=predicted_k[row],
+            node_ids=node_ids,
+            interface_side=interface_side,
+        )
+        axes_2d[row, 0].text(
+            -0.22,
+            0.5,
+            sample_id,
+            transform=axes_2d[row, 0].transAxes,
+            rotation=90,
+            va="center",
+            ha="center",
+            fontsize=8,
+        )
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+
+
+def _center_x_axis_indices(
+    coordinates_m: np.ndarray,
+    *,
+    normalized_x: float = 0.5,
+) -> tuple[np.ndarray, np.ndarray, dict[str, float | int]]:
+    coordinates = np.asarray(coordinates_m, dtype=float)
+    if coordinates.ndim != 2 or coordinates.shape[1] < 2 or len(coordinates) < 2:
+        raise ValueError(f"二维中心轴提取需要至少两个二维坐标点，实际形状为 {coordinates.shape}")
+    x = coordinates[:, 0]
+    y = coordinates[:, 1]
+    x_min, x_max = float(x.min()), float(x.max())
+    x_span = x_max - x_min
+    if x_span <= 0.0:
+        raise ValueError("二维采样坐标的 x 范围必须大于 0")
+    x_normalized = (x - x_min) / x_span
+    target = float(normalized_x)
+
+    rounded_x = np.round(x_normalized, decimals=9)
+    levels, inverse, counts = np.unique(
+        rounded_x,
+        return_inverse=True,
+        return_counts=True,
+    )
+    level_order = np.argsort(np.abs(levels - target))
+    selected = np.array([], dtype=np.int64)
+    selected_level = float("nan")
+    for level_index in level_order:
+        candidate = np.flatnonzero(inverse == int(level_index)).astype(np.int64)
+        if candidate.size >= 2:
+            selected = candidate
+            selected_level = float(levels[int(level_index)])
+            break
+    if selected.size < 2:
+        desired = min(len(coordinates), max(2, int(round(np.sqrt(len(coordinates))))))
+        selected = np.argsort(np.abs(x_normalized - target))[:desired].astype(np.int64)
+        selected_level = float(np.mean(x_normalized[selected]))
+
+    order = np.argsort(y[selected], kind="stable")
+    selected = selected[order]
+    selected_y = y[selected]
+    y_min, y_max = float(selected_y.min()), float(selected_y.max())
+    if y_max > y_min:
+        normalized_y = (selected_y - y_min) / (y_max - y_min)
+    else:
+        normalized_y = np.linspace(0.0, 1.0, len(selected), dtype=float)
+    metadata: dict[str, float | int] = {
+        "requested_x_normalized": target,
+        "selected_x_normalized": selected_level,
+        "selected_x_m_mean": float(np.mean(x[selected])),
+        "selected_x_m_min": float(np.min(x[selected])),
+        "selected_x_m_max": float(np.max(x[selected])),
+        "axis_point_count": int(len(selected)),
+    }
+    return selected, normalized_y.astype(np.float32), metadata
+
+
+def _write_axis_prediction_artifacts(
+    output_dir: Path,
+    *,
+    sample_ids: list[str],
+    axis_y: np.ndarray,
+    predicted_k: np.ndarray,
+    target_k: np.ndarray,
+    node_ids: np.ndarray | None,
+    metadata: dict[str, Any],
+) -> None:
+    ids = (
+        np.asarray(node_ids, dtype=np.int64)
+        if node_ids is not None
+        else np.arange(len(axis_y), dtype=np.int64)
+    )
+    np.savez_compressed(
+        output_dir / "axis_predictions.npz",
+        sample_ids=np.asarray(sample_ids),
+        normalized_y=np.asarray(axis_y, dtype=np.float32),
+        node_ids=ids,
+        prediction_temperature_k=np.asarray(predicted_k, dtype=np.float32),
+        target_temperature_k=np.asarray(target_k, dtype=np.float32),
+        metadata_json=np.asarray(json.dumps(metadata, ensure_ascii=False)),
+    )
+    with (output_dir / "axis_predictions.csv").open(
+        "w",
+        encoding="utf-8",
+        newline="",
+    ) as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            [
+                "sample_id",
+                "node_id",
+                "normalized_y",
+                "temperature_k",
+                "target_temperature_k",
+                "absolute_error_k",
+            ]
+        )
+        for sample_index, sample_id in enumerate(sample_ids):
+            for point_index in range(len(axis_y)):
+                prediction = float(predicted_k[sample_index, point_index])
+                target = float(target_k[sample_index, point_index])
+                writer.writerow(
+                    [
+                        sample_id,
+                        int(ids[point_index]),
+                        f"{float(axis_y[point_index]):.9g}",
+                        f"{prediction:.7g}",
+                        f"{target:.7g}",
+                        f"{abs(prediction - target):.7g}",
+                    ]
+                )
+
+
 def _synchronize_if_cuda(device: torch.device) -> None:
     if device.type == "cuda":
         torch.cuda.synchronize(device=device)
@@ -316,6 +543,7 @@ def predict_and_compare(
     compute_loss: bool = False,
     enable_plots: bool = False,
     num_field_samples: int = 6,
+    prediction_dimension: str = "auto",
     enable_benchmark: bool = False,
     benchmark_warmup_samples: int = 64,
     benchmark_runs: int = DEFAULT_BENCHMARK_RUNS,
@@ -344,8 +572,22 @@ def predict_and_compare(
         )
 
     dataset = AITemperatureDataset(manifest_path, config=cfg)
+    requested_dimension = str(prediction_dimension or "auto").strip().casefold()
+    if requested_dimension not in {"auto", "one", "two"}:
+        raise ValueError(
+            f"prediction_dimension 必须是 auto/one/two，实际为 {prediction_dimension!r}"
+        )
+    resolved_prediction_dimension = (
+        "two" if dataset.is_point_field else "one"
+    ) if requested_dimension == "auto" else requested_dimension
+    if resolved_prediction_dimension == "two" and not dataset.is_point_field:
+        raise ValueError("一维模型只能选择一维预测输出，不能选择二维")
     if len(dataset) == 0:
-        metrics = {"samples": 0, "artifacts_dir": str(output_dir)}
+        metrics = {
+            "samples": 0,
+            "prediction_dimension": resolved_prediction_dimension,
+            "artifacts_dir": str(output_dir),
+        }
         (output_dir / "metrics.json").write_text(
             json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8"
         )
@@ -356,6 +598,7 @@ def predict_and_compare(
             cfg, dataset, checkpoint_path, manifest_path, output_dir,
             enable_plots=enable_plots,
             num_field_samples=num_field_samples,
+            prediction_dimension=resolved_prediction_dimension,
             enable_benchmark=enable_benchmark,
             benchmark_warmup_samples=benchmark_warmup_samples,
             benchmark_runs=benchmark_runs,
@@ -435,6 +678,33 @@ def predict_and_compare(
     acoustic_true = np.concatenate(acoustic_true_chunks, axis=0)
     waveform_mean = np.concatenate(waveform_mean_chunks, axis=0) if waveform_mean_chunks else np.array([])
     waveform_std = np.concatenate(waveform_std_chunks, axis=0) if waveform_std_chunks else np.array([])
+    if field_pred.ndim == 3:
+        center_row = int(field_pred.shape[1] // 2)
+        axis_pred = np.asarray(field_pred[:, center_row, :])
+        axis_true = np.asarray(field_true[:, center_row, :])
+    elif field_pred.ndim == 2:
+        center_row = 0
+        axis_pred = np.asarray(field_pred)
+        axis_true = np.asarray(field_true)
+    else:
+        raise ValueError(f"一维预测字段形状不受支持: {field_pred.shape}")
+    axis_y = np.linspace(0.0, 1.0, axis_pred.shape[-1], dtype=np.float32)
+    axis_metadata = {
+        "prediction_dimension": "one",
+        "source_model_dimension": "one",
+        "axis_definition": "center_row_of_legacy_grid",
+        "center_row_index": center_row,
+        "axis_point_count": int(axis_pred.shape[-1]),
+    }
+    _write_axis_prediction_artifacts(
+        output_dir,
+        sample_ids=sample_ids[: len(axis_pred)],
+        axis_y=axis_y,
+        predicted_k=axis_pred,
+        target_k=axis_true,
+        node_ids=None,
+        metadata=axis_metadata,
+    )
 
     np.savez(
         output_dir / "predictions.npz",
@@ -492,16 +762,24 @@ def predict_and_compare(
             valid_idx = np.arange(len(temp_pred))
         pick_count = int(min(num_field_samples, valid_idx.size))
         pick = valid_idx[:pick_count]
-        fields_dir = output_dir / "field_compare"
+        fields_dir = output_dir / "axis_compare"
         fields_dir.mkdir(parents=True, exist_ok=True)
         for k, i in enumerate(pick):
             sid = sample_ids[i] if i < len(sample_ids) else f"idx_{i}"
-            _plot_field_triptych(
+            _plot_axis_triptych(
                 sample_id=sid,
-                true_field=field_true[i],
-                pred_field=field_pred[i],
+                axis_y=axis_y,
+                true_k=axis_true[i],
+                predicted_k=axis_pred[i],
                 output_path=fields_dir / f"{k:02d}_{sid}.png",
             )
+        _plot_axis_comparison_grid(
+            [sample_ids[int(i)] for i in pick],
+            axis_y,
+            axis_true[pick],
+            axis_pred[pick],
+            output_dir / "axis_compare.png",
+        )
 
     temperature_mae, temperature_rmse, temperature_max_error = compute_prediction_metrics(
         temp_true,
@@ -510,6 +788,9 @@ def predict_and_compare(
     denom = max(n_samples, 1)
     metrics: dict[str, Any] = {
         "samples": n_samples,
+        "prediction_dimension": resolved_prediction_dimension,
+        "axis_metrics": kelvin_metrics(axis_pred, axis_true)["full_field"],
+        "axis_point_count": int(axis_pred.shape[-1]),
         "compute_loss": bool(compute_loss),
         "enable_plots": bool(enable_plots),
         "enable_benchmark": bool(enable_benchmark),
@@ -579,6 +860,7 @@ def _finalize_point_field_prediction(
     peak_cuda_memory_bytes: int,
     enable_plots: bool,
     num_field_samples: int,
+    prediction_dimension: str,
     enable_benchmark: bool,
     benchmark_warmup_samples: int,
     benchmark_runs: int,
@@ -602,9 +884,41 @@ def _finalize_point_field_prediction(
         masks[f"material_{int(material)}"] = material_ids == material
     high_threshold = float(np.quantile(target_k, 0.9))
     metrics = kelvin_metrics(prediction_k, target_k, masks=masks)
+    axis_indices: np.ndarray | None = None
+    axis_y: np.ndarray | None = None
+    axis_metadata: dict[str, Any] = {}
+    axis_prediction: np.ndarray | None = None
+    axis_target: np.ndarray | None = None
+    if prediction_dimension == "one":
+        axis_indices, axis_y, center_axis_metadata = _center_x_axis_indices(
+            coordinates,
+            normalized_x=0.5,
+        )
+        axis_prediction = prediction_k[:, axis_indices]
+        axis_target = target_k[:, axis_indices]
+        axis_metadata = {
+            "prediction_dimension": "one",
+            "source_model_dimension": "two",
+            "axis_definition": "nearest_sampled_vertical_axis",
+            **center_axis_metadata,
+        }
+        _write_axis_prediction_artifacts(
+            output_dir,
+            sample_ids=[
+                str(record.get("sample_id", f"idx_{index}"))
+                for index, record in enumerate(dataset.records)
+            ],
+            axis_y=axis_y,
+            predicted_k=axis_prediction,
+            target_k=axis_target,
+            node_ids=node_ids[axis_indices],
+            metadata=axis_metadata,
+        )
+        metrics["axis"] = kelvin_metrics(axis_prediction, axis_target)["full_field"]
     metrics.update({
         "samples": len(dataset), "point_count": int(dataset.point_count),
         "waveform_length": int(dataset.waveform_length),
+        "prediction_dimension": prediction_dimension,
         "model_kind": model_kind, "checkpoint_version": int(checkpoint_version),
         "high_temperature_threshold_k": high_threshold,
         "high_temperature": kelvin_metrics(prediction_k[target_k >= high_threshold], target_k[target_k >= high_threshold])["full_field"],
@@ -638,17 +952,22 @@ def _finalize_point_field_prediction(
     metadata = {
         "checkpoint": checkpoint_label, "checkpoint_version": int(checkpoint_version),
         "model_kind": model_kind, "schema_version": int(dataset.schema_version),
+        "prediction_dimension": prediction_dimension,
         "waveform_length": int(dataset.waveform_length),
         "normalization": dict(dataset.normalization), "sampling": dict(dataset.sampling_metadata),
         "temperature_unit": "K", "coordinate_unit": "m",
         "raw_prediction_table": "predictions.csv",
     }
+    if axis_metadata:
+        metadata["axis"] = axis_metadata
     if metadata_extra:
         metadata.update(metadata_extra)
     (output_dir / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     plotted_samples = 0
     if enable_plots and plt is not None and int(num_field_samples) > 0:
-        compare_dir = output_dir / "field_compare"
+        compare_dir = output_dir / (
+            "axis_compare" if prediction_dimension == "one" else "field_compare"
+        )
         compare_dir.mkdir(parents=True, exist_ok=True)
         plot_count = min(int(num_field_samples), len(dataset))
         for sample_index in range(plot_count):
@@ -658,20 +977,59 @@ def _finalize_point_field_prediction(
                 for char in sample_id
             ).strip("_") or f"idx_{sample_index}"
             compare_path = compare_dir / f"{sample_index:04d}_{safe_id}.png"
-            _plot_point_field_triptych(
-                sample_id=sample_id,
-                coordinates_m=coordinates,
-                true_k=target_k[sample_index],
-                predicted_k=prediction_k[sample_index],
-                output_path=compare_path,
-            )
-            if sample_index == 0:
+            if prediction_dimension == "one":
+                assert (
+                    axis_indices is not None
+                    and axis_y is not None
+                    and axis_prediction is not None
+                    and axis_target is not None
+                )
+                _plot_axis_triptych(
+                    sample_id=sample_id,
+                    axis_y=axis_y,
+                    true_k=axis_target[sample_index],
+                    predicted_k=axis_prediction[sample_index],
+                    output_path=compare_path,
+                    node_ids=node_ids[axis_indices],
+                    interface_side=interface_side[axis_indices],
+                )
+            else:
+                _plot_point_field_triptych(
+                    sample_id=sample_id,
+                    coordinates_m=coordinates,
+                    true_k=target_k[sample_index],
+                    predicted_k=prediction_k[sample_index],
+                    output_path=compare_path,
+                )
+            if sample_index == 0 and prediction_dimension == "two":
                 # Keep the original single-image artifact for downstream users.
                 (output_dir / "point_field_compare.png").write_bytes(
                     compare_path.read_bytes()
                 )
             plotted_samples += 1
+        if (
+            prediction_dimension == "one"
+            and axis_indices is not None
+            and axis_y is not None
+            and axis_prediction is not None
+            and axis_target is not None
+        ):
+            _plot_axis_comparison_grid(
+                [
+                    str(dataset.records[index].get("sample_id", f"idx_{index}"))
+                    for index in range(plot_count)
+                ],
+                axis_y,
+                axis_target[:plot_count],
+                axis_prediction[:plot_count],
+                output_dir / "axis_compare.png",
+                node_ids=node_ids[axis_indices],
+                interface_side=interface_side[axis_indices],
+            )
     metrics["field_plot_samples"] = int(plotted_samples)
+    metrics["axis_plot_samples"] = (
+        int(plotted_samples) if prediction_dimension == "one" else 0
+    )
     if enable_benchmark and benchmark_metrics:
         metrics.update(benchmark_metrics)
     (output_dir / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -687,6 +1045,7 @@ def _predict_point_field(
     *,
     enable_plots: bool,
     num_field_samples: int,
+    prediction_dimension: str,
     enable_benchmark: bool,
     benchmark_warmup_samples: int,
     benchmark_runs: int,
@@ -780,6 +1139,7 @@ def _predict_point_field(
         peak_cuda_memory_bytes=int(torch.cuda.max_memory_allocated(device)) if device.type == "cuda" else 0,
         enable_plots=enable_plots,
         num_field_samples=num_field_samples,
+        prediction_dimension=prediction_dimension,
         enable_benchmark=enable_benchmark,
         benchmark_warmup_samples=benchmark_warmup_samples,
         benchmark_runs=benchmark_runs,
@@ -797,6 +1157,7 @@ def predict_with_material_router(
     sync_config_from_checkpoint: bool = True,
     enable_plots: bool = False,
     num_field_samples: int = 6,
+    prediction_dimension: str = "auto",
     enable_benchmark: bool = False,
     benchmark_warmup_samples: int = 64,
     benchmark_runs: int = DEFAULT_BENCHMARK_RUNS,
@@ -855,6 +1216,7 @@ def predict_with_material_router(
             sync_config_from_checkpoint=sync_config_from_checkpoint,
             enable_plots=enable_plots,
             num_field_samples=num_field_samples,
+            prediction_dimension=prediction_dimension,
             enable_benchmark=enable_benchmark,
             benchmark_warmup_samples=benchmark_warmup_samples,
             benchmark_runs=benchmark_runs,
@@ -938,6 +1300,7 @@ def predict_collection_with_checkpoint(
     sync_config_from_checkpoint: bool = True,
     enable_plots: bool = False,
     num_field_samples: int = 6,
+    prediction_dimension: str = "auto",
     enable_benchmark: bool = False,
     benchmark_warmup_samples: int = 64,
     benchmark_runs: int = DEFAULT_BENCHMARK_RUNS,
@@ -999,6 +1362,7 @@ def predict_collection_with_checkpoint(
             sync_config_from_checkpoint=sync_config_from_checkpoint,
             enable_plots=enable_plots,
             num_field_samples=num_field_samples,
+            prediction_dimension=prediction_dimension,
             enable_benchmark=enable_benchmark,
             benchmark_warmup_samples=benchmark_warmup_samples,
             benchmark_runs=benchmark_runs,

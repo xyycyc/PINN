@@ -1,3 +1,5 @@
+"""Command-line orchestration for database, training, prediction, and GUI tasks."""
+
 from __future__ import annotations
 
 import argparse
@@ -8,9 +10,11 @@ from pathlib import Path
 from .artifact_paths import validate_artifact_basename
 from .config import AIModelConfig
 from .data_process import (
+    DEFAULT_MATERIAL_SPLIT,
     SPLIT_EXPERIMENT_POLICIES,
     MATERIAL_COLLECTION_KIND,
     DatabaseBuilder,
+    attach_external_test_manifest,
     build_case_dataset,
     build_material_collection,
     build_mixed_collection_manifest,
@@ -26,6 +30,9 @@ from .data_process import (
     split_manifest_file,
     sample_material_name,
     validate_material_split,
+)
+from .database.raw.waveforms_by_file.build_post0_database import (
+    build_inference_database as build_post0_inference_database,
 )
 from .model import (
     OnlineUpdater,
@@ -619,7 +626,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--experiment-dir",
         type=str,
         default="raw/10times",
-        help="实验数据目录；相对路径默认按 data_root 解析（如 raw/10times）",
+        help=(
+            "实验数据目录；相对路径默认按 data_root 解析（如 raw/10times）；"
+            "按配置结构和 CSV 字段自动识别旧格式或直接导出 case"
+        ),
     )
     build_db.add_argument(
         "--experiment-material",
@@ -639,6 +649,51 @@ def _build_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="MATERIAL=TRAIN,VALIDATION,TEST",
         help="多材料模式下单独指定某材料的划分比例；可重复传入",
+    )
+    build_db.add_argument(
+        "--external-test-dir",
+        type=str,
+        default="",
+        help="仅测试的 post0 实验波形 CSV 目录；只在多材料建库中使用",
+    )
+    build_db.add_argument(
+        "--external-test-material",
+        type=str,
+        default="",
+        help="外部波形测试集要挂接到的材料路由字段，例如 wumu",
+    )
+    build_db.add_argument(
+        "--external-test-dataset-name",
+        type=str,
+        default="wumu_exp",
+        help="外部波形测试集名称及输出目录名",
+    )
+    build_db.add_argument(
+        "--external-test-signal-column",
+        type=str,
+        default="amplitude_filtered_residual",
+    )
+    build_db.add_argument(
+        "--external-test-time-column",
+        type=str,
+        default="time_s",
+    )
+    build_db.add_argument(
+        "--external-test-time-min-s",
+        type=float,
+        default=0.0,
+    )
+    build_db.add_argument(
+        "--external-test-post0-length",
+        type=int,
+        default=None,
+        help="可选；不传时使用所有外部测试波形 post0 段的最短长度",
+    )
+    build_db.add_argument(
+        "--external-test-limit",
+        type=int,
+        default=-1,
+        help="-1 表示导入全部外部测试 CSV",
     )
     build_db.add_argument("--experiment-limit", type=int, default=2000)
     build_db.add_argument(
@@ -781,6 +836,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="启用 --plots 时，抽样绘制温度场三联图的样本数",
     )
     predict.add_argument(
+        "--prediction-dimension",
+        type=str,
+        choices=["auto", "one", "two"],
+        default="auto",
+        help=(
+            "预测结果展示维度：二维固定节点模型可选 one/two；"
+            "一维模型只能选 one；auto 按模型类型选择"
+        ),
+    )
+    predict.add_argument(
         "--benchmark",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -852,6 +917,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    """Parse one command and dispatch it through the versioned project pipelines."""
     parser = _build_parser()
     args = parser.parse_args()
     _reject_legacy_noop_weights(args)
@@ -881,6 +947,8 @@ def main() -> None:
         build_builder = DatabaseBuilder(config)
         build_builder.database_dir = build_data_root
         experiment_source = _resolve_source_dir(config, args.experiment_dir)
+        if str(args.external_test_dir or "").strip() and not bool(args.multi_material_input):
+            raise ValueError("独立波形测试集只能与 --multi-material-input 一起使用")
         if bool(args.multi_material_input):
             if not bool(args.skip_simulation) or str(args.external_sim_dir or "").strip():
                 raise ValueError("多材料固定节点数据不能与旧规则网格仿真 CSV 混合")
@@ -888,6 +956,20 @@ def main() -> None:
                 raise ValueError("多材料建库必须启用独立的 train/validation/test 划分")
             material_roots = discover_material_roots(experiment_source)
             material_splits = _parse_material_split_values(args.material_split)
+            external_test_dir = str(args.external_test_dir or "").strip()
+            if external_test_dir:
+                external_test_material = str(args.external_test_material or "").strip()
+                if not external_test_material:
+                    raise ValueError("导入独立波形测试集时必须指定 --external-test-material")
+                selected_split = material_splits.get(
+                    external_test_material,
+                    DEFAULT_MATERIAL_SPLIT,
+                )
+                if abs(float(selected_split[2])) > 1e-9:
+                    raise ValueError(
+                        f"材料 {external_test_material!r} 使用独立测试集时，"
+                        "其 --material-split 测试比例必须为 0"
+                    )
             build_data_root = (
                 config.data_root
                 / "data_process"
@@ -906,6 +988,73 @@ def main() -> None:
                 validation_manifest_name=str(args.validation_manifest_name),
                 test_manifest_name=str(args.test_manifest_name),
             )
+            external_test_result: dict[str, object] | None = None
+            if external_test_dir:
+                collection_payload = load_material_collection(collection_path)
+                matching_entries = [
+                    entry
+                    for entry in collection_payload["materials"]
+                    if str(entry.get("material_key", "")).strip() == external_test_material
+                ]
+                if not matching_entries:
+                    available = [
+                        str(entry.get("material_key", "")).strip()
+                        for entry in collection_payload["materials"]
+                    ]
+                    raise ValueError(
+                        f"外部测试材料 {external_test_material!r} 不在多材料目录中；"
+                        f"可用材料为 {available}"
+                    )
+                reference_manifest = resolve_collection_manifest(
+                    collection_path,
+                    matching_entries[0],
+                    "train",
+                )
+                external_source = _resolve_source_dir(config, external_test_dir)
+                external_dataset_name = (
+                    str(args.external_test_dataset_name or "").strip()
+                    or external_source.name
+                    or f"{external_test_material}_external_test"
+                )
+                external_output = (
+                    build_data_root
+                    / "external_tests"
+                    / _sanitize_material_label(external_dataset_name)
+                )
+                external_limit = (
+                    None
+                    if int(args.external_test_limit) < 0
+                    else int(args.external_test_limit)
+                )
+                external_summary = build_post0_inference_database(
+                    source_dir=external_source,
+                    output_dir=external_output,
+                    reference_manifest=reference_manifest,
+                    dataset_name=external_dataset_name,
+                    material_key=external_test_material,
+                    signal_column=str(args.external_test_signal_column),
+                    time_column=str(args.external_test_time_column),
+                    time_min_s=float(args.external_test_time_min_s),
+                    post0_length=args.external_test_post0_length,
+                    limit=external_limit,
+                    test_manifest_name=str(args.test_manifest_name),
+                )
+                external_manifest = Path(
+                    str(external_summary["manifests"]["test"])
+                )
+                attach_external_test_manifest(
+                    collection_path,
+                    material_key=external_test_material,
+                    manifest_path=external_manifest,
+                    source_root=external_source,
+                )
+                external_test_result = {
+                    "material_key": external_test_material,
+                    "source_dir": str(external_source),
+                    "manifest": str(external_manifest),
+                    "records": int(external_summary["records"]),
+                    "inference_only": True,
+                }
             register_materials(
                 config.data_root,
                 material_roots.keys(),
@@ -919,6 +1068,7 @@ def main() -> None:
                         "material_collection": str(collection_path),
                         "dataset_label": collection_payload.get("dataset_label", ""),
                         "materials": collection_payload.get("materials", []),
+                        "external_test": external_test_result,
                     },
                     ensure_ascii=False,
                     indent=2,
@@ -1347,6 +1497,7 @@ def main() -> None:
                 sync_config_from_checkpoint=False,
                 enable_plots=bool(args.plots),
                 num_field_samples=args.num_field_samples,
+                prediction_dimension=str(args.prediction_dimension),
                 enable_benchmark=bool(args.benchmark),
                 benchmark_warmup_samples=args.benchmark_warmup_samples,
                 benchmark_runs=args.benchmark_runs,
@@ -1363,6 +1514,7 @@ def main() -> None:
                 "sync_config_from_checkpoint": False,
                 "enable_plots": bool(args.plots),
                 "num_field_samples": args.num_field_samples,
+                "prediction_dimension": str(args.prediction_dimension),
                 "enable_benchmark": bool(args.benchmark),
                 "benchmark_warmup_samples": args.benchmark_warmup_samples,
                 "benchmark_runs": args.benchmark_runs,

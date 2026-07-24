@@ -272,7 +272,7 @@ class MaterialSplitEditor(ttk.Frame):
         )
         self.status = ttk.Label(
             top,
-            text="开启多材料输入后，扫描所选上层目录的直接子文件夹。",
+            text="测试比例可以为 0；可由独立波形测试集替代。",
             foreground="#666",
         )
         self.status.pack(side="left", padx=(PADX, 0))
@@ -370,10 +370,10 @@ class MaterialSplitEditor(ttk.Frame):
                     continue
                 raise ValueError(f"材料 {material_key} 的划分比例不是合法数字。") from exc
             if validate:
-                if not all(0.0 <= value < 1.0 for value in values):
-                    raise ValueError(f"材料 {material_key} 的各划分比例必须位于 [0,1)。")
-                if values[0] <= 0.0 or values[2] <= 0.0:
-                    raise ValueError(f"材料 {material_key} 的训练和测试比例必须大于 0。")
+                if not all(0.0 <= value <= 1.0 for value in values):
+                    raise ValueError(f"材料 {material_key} 的各划分比例必须位于 [0,1]。")
+                if values[0] <= 0.0:
+                    raise ValueError(f"case 材料 {material_key} 的训练比例必须大于 0。")
                 if abs(sum(values) - 1.0) > 1e-9:
                     raise ValueError(f"材料 {material_key} 的训练/验证/测试比例之和必须为 1。")
             result[material_key] = values  # type: ignore[assignment]

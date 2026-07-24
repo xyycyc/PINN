@@ -423,6 +423,23 @@ class CompatibilityBaselineTests(unittest.TestCase):
                     _parse_material_split_values(parsed.material_split),
                     {"steel": (0.7, 0.1, 0.2), "wumu": (0.6, 0.1, 0.3)},
                 )
+
+                external_source = repo_root / "wumu_exp"
+                external_source.mkdir()
+                train.set("0.9"); validation.set("0.1"); test.set("0")
+                build.external_test_enabled.set(True)
+                build.external_test_dir.set(str(external_source))
+                build.external_test_material.set("wumu")
+                build.external_test_dataset_name.set("wumu_exp")
+                build.validate_form()
+                command = build.compose_command()
+                parsed = parser.parse_args(command[command.index("ai_model") + 1:])
+                self.assertEqual(parsed.external_test_dir, str(external_source))
+                self.assertEqual(parsed.external_test_material, "wumu")
+                self.assertEqual(
+                    _parse_material_split_values(parsed.material_split)["wumu"],
+                    (0.9, 0.1, 0.0),
+                )
         finally:
             root.destroy()
 
@@ -455,9 +472,23 @@ class CompatibilityBaselineTests(unittest.TestCase):
 
             predict = PredictTab(notebook, path_settings_tab=path_tab, **kwargs)
             predict.infer_device.set("auto")
+            predict.rule_dimension.set("one")
+            predict._update_prediction_dimension_options()
             with patch.object(predict, "_selected_checkpoint_path", return_value="selected.pt"):
                 command = predict.compose_command()
             parsed = parser.parse_args(command[command.index("ai_model") + 1:])
             self.assertEqual(parsed.device, "auto")
+            self.assertEqual(parsed.prediction_dimension, "one")
+            predict.rule_dimension.set("two")
+            predict._update_prediction_dimension_options()
+            self.assertEqual(
+                tuple(predict.prediction_dimension.combo.cget("values")),
+                ("two", "one"),
+            )
+            predict.prediction_dimension.set("one")
+            with patch.object(predict, "_selected_checkpoint_path", return_value="selected.pt"):
+                command = predict.compose_command()
+            parsed = parser.parse_args(command[command.index("ai_model") + 1:])
+            self.assertEqual(parsed.prediction_dimension, "one")
         finally:
             root.destroy()

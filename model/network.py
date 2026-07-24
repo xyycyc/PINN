@@ -1,3 +1,5 @@
+"""CNN/LSTM encoders and the legacy multi-head reconstruction network."""
+
 from __future__ import annotations
 
 import torch
@@ -5,6 +7,8 @@ import torch.nn as nn
 
 
 class ConvEncoder(nn.Module):
+    """Encode local waveform patterns with a compact one-dimensional CNN."""
+
     def __init__(self, in_channels: int = 1, hidden_dim: int = 128):
         super().__init__()
         self.net = nn.Sequential(
@@ -20,11 +24,14 @@ class ConvEncoder(nn.Module):
         )
 
     def forward(self, waveform: torch.Tensor) -> torch.Tensor:
+        """Return one pooled CNN feature vector per waveform."""
         x = self.net(waveform)
         return x.squeeze(-1)
 
 
 class LSTMEncoder(nn.Module):
+    """Encode ordered waveform evolution with the final LSTM hidden state."""
+
     def __init__(self, input_dim: int = 1, hidden_dim: int = 128, num_layers: int = 1):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -36,6 +43,7 @@ class LSTMEncoder(nn.Module):
         )
 
     def forward(self, waveform: torch.Tensor) -> torch.Tensor:
+        """Return the last-layer hidden state for each input waveform."""
         # Conv1d uses [B, C, L], while LSTM expects [B, L, C].
         sequence = waveform.transpose(1, 2)
         _, (hidden, _) = self.lstm(sequence)
@@ -96,6 +104,7 @@ class AIReconstructionModel(nn.Module):
         self,
         waveform: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
+        """Predict the legacy grid, acoustic features, and scalar temperature."""
         encoded = self.weight_cnn * self.encoder(waveform)
         lstm_encoded = self.weight_lstm * self.lstm_encoder(waveform)
 

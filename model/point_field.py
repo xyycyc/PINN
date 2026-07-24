@@ -44,6 +44,7 @@ class DirectPointFieldModel(nn.Module):
             self.register_buffer(name, value)
 
     def forward(self, waveform: torch.Tensor) -> torch.Tensor:
+        """Map a normalized waveform batch to all fixed-node temperatures."""
         latent = self.backbone(
             torch.cat(
                 (
@@ -89,12 +90,14 @@ def load_compatible_point_field_state(
 
 def weighted_temperature_loss(prediction: torch.Tensor, target: torch.Tensor,
                               sample_weights: torch.Tensor) -> torch.Tensor:
+    """Return sample-averaged node MSE after normalizing spatial weights."""
     weights = sample_weights / sample_weights.sum(dim=-1, keepdim=True).clamp_min(1e-12)
     return (((prediction - target) ** 2) * weights).sum(dim=-1).mean()
 
 
 def kelvin_metrics(prediction_k: np.ndarray, target_k: np.ndarray, *,
                    masks: dict[str, np.ndarray] | None = None) -> dict[str, Any]:
+    """Compute Kelvin-domain MAE, RMSE, and maximum absolute error by mask."""
     error = np.asarray(prediction_k, float) - np.asarray(target_k, float)
     def one(values: np.ndarray) -> dict[str, float]:
         return {"mae_k": float(np.mean(np.abs(values))), "rmse_k": float(np.sqrt(np.mean(values**2))),
@@ -108,11 +111,15 @@ def kelvin_metrics(prediction_k: np.ndarray, target_k: np.ndarray, *,
 
 @dataclass(frozen=True)
 class TemperatureNormalizer:
+    """Store reversible training-split temperature z-score statistics."""
+
     mean_k: float
     std_k: float
 
     def normalize(self, value: np.ndarray) -> np.ndarray:
+        """Convert Kelvin values to the checkpoint's normalized domain."""
         return (value - self.mean_k) / max(self.std_k, 1e-12)
 
     def denormalize(self, value: np.ndarray) -> np.ndarray:
+        """Convert normalized temperatures back to Kelvin."""
         return value * self.std_k + self.mean_k

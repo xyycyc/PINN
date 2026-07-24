@@ -28,6 +28,7 @@ _KNOWN_MATERIAL_NAMES = {
 
 
 def sample_material_name(material_key: str) -> str:
+    """Return the display name for a sample-level material routing key."""
     key = str(material_key).strip()
     return _KNOWN_MATERIAL_NAMES.get(key.casefold(), key)
 
@@ -45,11 +46,12 @@ def validate_material_split(
     validation_ratio: float,
     test_ratio: float,
 ) -> tuple[float, float, float]:
+    """Validate one material's independent train/validation/test proportions."""
     values = (float(train_ratio), float(validation_ratio), float(test_ratio))
-    if not all(0.0 <= value < 1.0 for value in values):
-        raise ValueError(f"材料划分比例必须分别位于 [0, 1): {values}")
-    if values[0] <= 0.0 or values[2] <= 0.0:
-        raise ValueError(f"材料训练集和测试集比例必须大于 0: {values}")
+    if not all(0.0 <= value <= 1.0 for value in values):
+        raise ValueError(f"材料划分比例必须分别位于 [0, 1]: {values}")
+    if values[0] <= 0.0:
+        raise ValueError(f"case 材料训练集比例必须大于 0: {values}")
     if abs(sum(values) - 1.0) > 1e-9:
         raise ValueError(f"材料 train/validation/test 比例之和必须为 1: {values}")
     return values
@@ -97,6 +99,7 @@ def build_material_collection(
     validation_manifest_name: str = "validation_manifest.json",
     test_manifest_name: str = "test_manifest.json",
 ) -> Path:
+    """Build one fixed-node dataset per direct child material and index the set."""
     roots = discover_material_roots(parent_root)
     supplied = dict(material_splits or {})
     unknown = sorted(set(supplied) - set(roots))
@@ -163,6 +166,7 @@ def build_material_collection(
 
 
 def load_material_collection(path: str | Path) -> dict[str, Any]:
+    """Load and structurally validate a material collection manifest."""
     collection_path = Path(path)
     payload = json.loads(collection_path.read_text(encoding="utf-8"))
     if payload.get("collection_kind") != MATERIAL_COLLECTION_KIND:
@@ -178,11 +182,128 @@ def load_material_collection(path: str | Path) -> dict[str, Any]:
     return payload
 
 
+def attach_external_test_manifest(
+    collection_path: str | Path,
+    *,
+    material_key: str,
+    manifest_path: str | Path,
+    source_root: str | Path,
+) -> Path:
+    """Route one separately built, inference-only manifest to a material test split."""
+    resolved_collection = Path(collection_path).resolve()
+    collection = load_material_collection(resolved_collection)
+    resolved_external = Path(manifest_path).resolve()
+    if not resolved_external.is_file():
+        raise FileNotFoundError(f"外部测试 manifest 不存在: {resolved_external}")
+    external_payload = json.loads(resolved_external.read_text(encoding="utf-8"))
+    external_records = [dict(item) for item in external_payload.get("records", [])]
+    if not external_records:
+        raise ValueError(f"外部测试 manifest 没有记录: {resolved_external}")
+    if not bool(external_payload.get("inference_only")):
+        raise ValueError("外部测试 manifest 必须声明 inference_only=true")
+
+    key = str(material_key).strip()
+    actual_materials = {
+        str(record.get("material_key", "")).strip()
+        for record in external_records
+    }
+    if actual_materials != {key}:
+        raise ValueError(
+            f"外部测试 manifest 的 material_key 必须全部为 {key!r}，实际为 {sorted(actual_materials)}"
+        )
+
+    target_entry: dict[str, Any] | None = None
+    for raw_entry in collection["materials"]:
+        if str(raw_entry.get("material_key", "")).strip() == key:
+            target_entry = raw_entry
+            break
+    if target_entry is None:
+        raise ValueError(f"多材料集合中不存在外部测试集对应的材料: {key!r}")
+
+    train_manifest = resolve_collection_manifest(
+        resolved_collection,
+        target_entry,
+        "train",
+    )
+    train_payload = json.loads(train_manifest.read_text(encoding="utf-8"))
+    if int(external_payload.get("schema_version", 0)) != int(train_payload.get("schema_version", 0)):
+        raise ValueError("外部测试 manifest 与材料训练 manifest 的 schema_version 不一致")
+
+    def resolve_payload_path(payload_path: Any, owner: Path) -> Path:
+        path = Path(str(payload_path))
+        return (path if path.is_absolute() else owner.parent / path).resolve()
+
+    train_sampling_path = resolve_payload_path(train_payload.get("sampling_index", ""), train_manifest)
+    external_sampling_path = resolve_payload_path(
+        external_payload.get("sampling_index", ""),
+        resolved_external,
+    )
+    sampling_keys = (
+        "node_ids",
+        "coordinates_m",
+        "material_ids",
+        "interface_side",
+        "sample_weights",
+    )
+    with (
+        np.load(train_sampling_path, allow_pickle=False) as train_sampling,
+        np.load(external_sampling_path, allow_pickle=False) as external_sampling,
+    ):
+        mismatched = [
+            name
+            for name in sampling_keys
+            if train_sampling[name].shape != external_sampling[name].shape
+            or not np.allclose(
+                np.asarray(train_sampling[name]),
+                np.asarray(external_sampling[name]),
+                rtol=0.0,
+                atol=1e-10,
+            )
+        ]
+    if mismatched:
+        raise ValueError(f"外部测试集采样网格与材料训练集不一致: {mismatched}")
+
+    def waveform_lengths(payload: Mapping[str, Any], owner: Path) -> set[int]:
+        lengths: set[int] = set()
+        for record in payload.get("records", []):
+            waveform_path = resolve_payload_path(record["waveform_path"], owner)
+            lengths.add(int(np.load(waveform_path, mmap_mode="r").shape[-1]))
+        return lengths
+
+    train_lengths = waveform_lengths(train_payload, train_manifest)
+    external_lengths = waveform_lengths(external_payload, resolved_external)
+    if len(train_lengths) != 1 or external_lengths != train_lengths:
+        raise ValueError(
+            f"外部测试波形长度与材料训练集不一致: train={sorted(train_lengths)}, "
+            f"external_test={sorted(external_lengths)}"
+        )
+
+    manifests = dict(target_entry.get("manifests", {}))
+    generated_test = str(manifests.get("test", "")).strip()
+    if generated_test:
+        manifests["generated_case_test"] = generated_test
+    manifests["test"] = str(resolved_external)
+    target_entry["manifests"] = manifests
+    target_entry["external_test"] = {
+        "source_root": str(Path(source_root).resolve()),
+        "manifest": str(resolved_external),
+        "records": len(external_records),
+        "inference_only": True,
+        "replaces_generated_case_test": bool(generated_test),
+    }
+    resolved_collection.write_text(
+        json.dumps(collection, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return resolved_collection
+
+
 def resolve_collection_manifest(
     collection_path: str | Path,
     material_entry: Mapping[str, Any],
     kind: str,
 ) -> Path:
+    """Resolve a material split manifest relative to its collection file."""
     if kind not in {"combined", "train", "validation", "test"}:
         raise ValueError(f"不支持的集合 manifest 类型: {kind}")
     raw = str(dict(material_entry.get("manifests", {})).get(kind, "")).strip()
@@ -265,8 +386,22 @@ def build_mixed_collection_manifest(
                 )
 
         source_records = [dict(item) for item in payload.get("records", [])]
+        constituent_catalogs[material_key] = [
+            dict(item)
+            for item in payload.get("constituent_material_catalog", [])
+            if isinstance(item, dict)
+        ]
         if not source_records:
-            raise ValueError(f"材料 {material_key!r} 的 {split_kind} 清单为空: {manifest_path}")
+            if split_kind == "train":
+                raise ValueError(f"材料 {material_key!r} 的训练清单为空: {manifest_path}")
+            sample_catalog.append(
+                {
+                    "material_key": material_key,
+                    "material_name": str(entry.get("material_name", material_key)),
+                    "case_count": 0,
+                }
+            )
+            continue
         actual_materials = {
             str(item.get("material_key", "")).strip() for item in source_records
         }
@@ -300,11 +435,6 @@ def build_mixed_collection_manifest(
                 "case_count": len(source_records),
             }
         )
-        constituent_catalogs[material_key] = [
-            dict(item)
-            for item in payload.get("constituent_material_catalog", [])
-            if isinstance(item, dict)
-        ]
 
     if reference_payload is None or reference_sampling_path is None or not temperatures:
         raise ValueError("多材料集合没有可用于混合训练的记录")
@@ -360,6 +490,7 @@ def build_mixed_collection_manifest(
 
 
 def latest_material_collection(data_root: str | Path) -> Path | None:
+    """Return the newest valid collection beneath a configured data root."""
     root = Path(data_root) / "data_process"
     if not root.is_dir():
         return None
