@@ -1,8 +1,0 @@
-{
-  "cache_version": 1,
-  "pipeline_label": "smooth_robust_norm_cq1_sw11",
-  "sample_id": "exp_metal_matrix_00129",
-  "raw_path": "D:\\Desktop\\code\\ai_model\\database\\data_process\\metal_matrix\\waveforms\\exp_metal_matrix_00129.npy",
-  "mtime_ns": 1778867673796512800,
-  "size": 2176
-}

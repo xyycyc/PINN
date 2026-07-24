@@ -1,8 +1,0 @@
-sample_id,source,material_key,temperature_true_K,temperature_pred_K,abs_error_K,has_field_label
-exp_metal_matrix_post0_00005,experiment,metal_matrix,41.000000,28.632254,12.367746,0
-exp_metal_matrix_post0_00009,experiment,metal_matrix,49.000000,50.307255,1.307255,0
-exp_metal_matrix_post0_00012,experiment,metal_matrix,55.000000,56.516727,1.516727,0
-exp_metal_matrix_post0_00020,experiment,metal_matrix,69.000000,59.094303,9.905697,0
-exp_metal_matrix_post0_00022,experiment,metal_matrix,79.000000,74.677933,4.322067,0
-exp_metal_matrix_post0_00026,experiment,metal_matrix,107.000000,72.684784,34.315216,0
-exp_metal_matrix_post0_00027,experiment,metal_matrix,114.000000,129.262726,15.262726,0
