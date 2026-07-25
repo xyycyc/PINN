@@ -394,8 +394,31 @@ class AITemperatureDataset(Dataset):
             sampling_path = self.root / str(data["sampling_index"])
             with np.load(sampling_path, allow_pickle=False) as sampling:
                 self.point_count = int(len(sampling["node_ids"]))
-                self.constituent_material_ids = np.asarray(sampling["material_ids"], np.int64)
+                self.point_coordinates_m = np.asarray(
+                    sampling["coordinates_m"], np.float64
+                )
+                self.point_node_ids = np.asarray(sampling["node_ids"], np.int64)
+                self.constituent_material_ids = np.asarray(
+                    sampling["material_ids"], np.int64
+                )
+                self.point_interface_side = np.asarray(
+                    sampling["interface_side"], np.int64
+                )
+                self.point_sample_weights = np.asarray(
+                    sampling["sample_weights"], np.float32
+                )
                 self.sampling_metadata = json.loads(str(sampling["metadata_json"].item()))
+            for static_values in (
+                self.point_coordinates_m,
+                self.point_node_ids,
+                self.constituent_material_ids,
+                self.point_interface_side,
+                self.point_sample_weights,
+            ):
+                static_values.setflags(write=False)
+            self.sampling_fingerprint = str(
+                self.sampling_metadata.get("source_mesh_fingerprint", "")
+            )
             self.constituent_material_catalog = [
                 dict(item)
                 for item in data.get(
@@ -411,8 +434,13 @@ class AITemperatureDataset(Dataset):
             ]
         else:
             self.point_count = 0
+            self.point_coordinates_m = np.empty((0, 2), dtype=np.float64)
+            self.point_node_ids = np.array([], dtype=np.int64)
             self.constituent_material_ids = np.array([], dtype=np.int64)
+            self.point_interface_side = np.array([], dtype=np.int64)
+            self.point_sample_weights = np.array([], dtype=np.float32)
             self.sampling_metadata = {}
+            self.sampling_fingerprint = ""
             self.constituent_material_catalog = []
         material_registry = ensure_material_csv(self.config.data_root)
         materials_in_manifest = sorted(

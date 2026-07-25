@@ -159,10 +159,15 @@ def read_mesh_csv(
     }
 
 
-def _boundary_mask(xy: np.ndarray) -> np.ndarray:
+def boundary_mask(xy: np.ndarray) -> np.ndarray:
+    """Identify the exterior coordinate-box boundary used by fixed-node sampling."""
     lo, hi = xy.min(axis=0), xy.max(axis=0)
     tol = np.maximum((hi - lo) * 1e-9, 1e-12)
     return np.any((np.abs(xy - lo) <= tol) | (np.abs(xy - hi) <= tol), axis=1)
+
+
+# Backward-compatible private name retained for existing callers.
+_boundary_mask = boundary_mask
 
 
 def _paired_interface_selection(

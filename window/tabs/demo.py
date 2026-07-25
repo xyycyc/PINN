@@ -284,9 +284,6 @@ class DemoTab(BaseCommandTab):
         fixed_node_cases = self.multi_material_input.get() or bool(discover_cases(source))
         if self.multi_material_input.get():
             self.material_splits.specs()
-        training_mode = str(self.runtime["training_mode"].get())  # type: ignore[union-attr]
-        if fixed_node_cases and training_mode != "normal":
-            raise ValueError("固定节点一键演示目前仅支持 normal 模式，请修改训练模式。")
         if self.separate_materials.get() and not self.multi_material_input.get():
             raise ValueError(
                 "分别训练仅用于多材料上层目录；单个 wumu 文件夹是一种完整材料。"

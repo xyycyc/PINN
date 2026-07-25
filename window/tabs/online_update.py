@@ -261,12 +261,6 @@ class OnlineUpdateTab(BaseCommandTab):
         residual = self.runtime["residual_weight"].get()  # type: ignore[union-attr]
         if residual is None or float(residual) < 0:
             raise ValueError("物理残差权重必须大于或等于 0。")
-        if (
-            manifest_model_kind(active_manifest, repo_root=self.repo_root)
-            == "direct_point_field"
-            and self.runtime["training_mode"].get() != "normal"  # type: ignore[union-attr]
-        ):
-            raise ValueError("固定节点增量训练目前仅支持 normal 模式，请修改训练模式。")
         output_name = str(self.output_name.get() or "").strip()
         if output_name:
             normalize_pt_filename(output_name, label="增量 checkpoint 文件名")

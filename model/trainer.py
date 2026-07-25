@@ -33,6 +33,7 @@ from .point_field import (
     load_compatible_point_field_state,
     weighted_temperature_loss,
 )
+from .point_physics import POINT_SMOOTHNESS_COEFFICIENT, PointPhysicsOperator
 from .rule_registry import default_training_time_stamp
 from .waveform_io import prepare_model_waveform_input
 
@@ -76,6 +77,45 @@ def _finite_difference_second_y(field: torch.Tensor) -> torch.Tensor:
     if field.shape[-2] < 3:
         return torch.zeros_like(field[:, :1, :])
     return field[:, 2:, :] - 2.0 * field[:, 1:-1, :] + field[:, :-2, :]
+
+
+def _point_field_objective(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    sample_weights: torch.Tensor,
+    *,
+    training_mode: str,
+    physics_residual_weight: float,
+    point_physics: PointPhysicsOperator | None,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Compute the fixed-node objective without touching legacy-grid losses."""
+
+    field_loss = weighted_temperature_loss(prediction, target, sample_weights)
+    if training_mode == "normal":
+        zero = prediction.new_zeros(())
+        return field_loss, {
+            "field_loss": field_loss,
+            "smoothness_loss": zero,
+            "physics_residual_loss": zero,
+            "total_loss": field_loss,
+        }
+    if training_mode != "residual_pinn":
+        raise ValueError("training_mode must be `normal` or `residual_pinn`")
+    if point_physics is None:
+        raise ValueError("residual_pinn fixed-node training requires point physics")
+    smoothness_loss = point_physics.smoothness_loss(prediction)
+    physics_residual_loss = point_physics.laplacian_loss(prediction)
+    total_loss = (
+        field_loss
+        + POINT_SMOOTHNESS_COEFFICIENT * smoothness_loss
+        + float(physics_residual_weight) * physics_residual_loss
+    )
+    return total_loss, {
+        "field_loss": field_loss,
+        "smoothness_loss": smoothness_loss,
+        "physics_residual_loss": physics_residual_loss,
+        "total_loss": total_loss,
+    }
 
 
 class ReconstructionTrainer:
@@ -428,11 +468,6 @@ class ReconstructionTrainer:
                 label="训练任务名称",
                 allow_empty=True,
             ) or None
-        if self.config.training_mode != "normal":
-            raise ValueError(
-                "固定节点 direct_point_field 暂不支持 residual_pinn；"
-                "请将训练模式设为 normal"
-            )
         loader = DataLoader(dataset, batch_size=self.config.batch_size, shuffle=True)
         validation_loader = (
             DataLoader(validation_dataset, batch_size=self.config.batch_size, shuffle=False)
@@ -447,6 +482,16 @@ class ReconstructionTrainer:
             fixed_weight_cnn=self.config.fixed_weight_cnn,
             fixed_weight_lstm=self.config.fixed_weight_lstm,
         ).to(self.device)
+        point_physics = (
+            PointPhysicsOperator(
+                dataset.point_coordinates_m,
+                dataset.point_node_ids,
+                dataset.constituent_material_ids,
+                dataset.point_interface_side,
+            ).to(self.device)
+            if self.config.training_mode == "residual_pinn"
+            else None
+        )
 
         optimizer = torch.optim.Adam(model.parameters(), lr=self.config.learning_rate)
         history: list[dict[str, float | str]] = []
@@ -472,6 +517,11 @@ class ReconstructionTrainer:
             model.train()
             total_loss = 0.0
             total_mae_k = 0.0
+            component_totals = {
+                "field_loss": 0.0,
+                "smoothness_loss": 0.0,
+                "physics_residual_loss": 0.0,
+            }
             batches = 0
             for batch in loader:
                 waveform = batch["waveform"].to(self.device)
@@ -480,23 +530,41 @@ class ReconstructionTrainer:
                 optimizer.zero_grad()
                 waveform_norm, _, _ = prepare_model_waveform_input(waveform)
                 prediction = model(waveform_norm)
-                loss = weighted_temperature_loss(prediction, target, weights)
+                loss, loss_parts = _point_field_objective(
+                    prediction,
+                    target,
+                    weights,
+                    training_mode=self.config.training_mode,
+                    physics_residual_weight=self.config.physics_residual_weight,
+                    point_physics=point_physics,
+                )
                 loss.backward()
                 optimizer.step()
                 total_loss += float(loss.detach().cpu())
+                for key in component_totals:
+                    component_totals[key] += float(loss_parts[key].detach().cpu())
                 total_mae_k += float((prediction.detach() - target).abs().mean().cpu()) * dataset.temperature_std_k
                 batches += 1
             mean_loss = total_loss / max(batches, 1)
             epoch_stats: dict[str, float | str] = {
-                "epoch": float(epoch + 1), "training_mode": "direct_point_field",
+                "epoch": float(epoch + 1), "training_mode": self.config.training_mode,
                 "mean_epoch_loss": mean_loss, "total_loss": mean_loss,
-                "field_loss": mean_loss, "temperature_mae_k": total_mae_k / max(batches, 1),
+                "field_loss": component_totals["field_loss"] / max(batches, 1),
+                "temperature_mae_k": total_mae_k / max(batches, 1),
                 "acoustic_loss": 0.0, "temperature_loss": 0.0,
-                "smoothness_loss": 0.0, "physics_residual_loss": 0.0,
+                "smoothness_loss": component_totals["smoothness_loss"] / max(batches, 1),
+                "physics_residual_loss": (
+                    component_totals["physics_residual_loss"] / max(batches, 1)
+                ),
             }
             if validation_loader is not None and validation_dataset is not None:
                 model.eval()
                 validation_loss_total = 0.0
+                validation_component_totals = {
+                    "field_loss": 0.0,
+                    "smoothness_loss": 0.0,
+                    "physics_residual_loss": 0.0,
+                }
                 validation_abs_error_total = 0.0
                 validation_samples = 0
                 validation_values = 0
@@ -507,9 +575,20 @@ class ReconstructionTrainer:
                         weights = validation_batch["sample_weights"].to(self.device)
                         waveform_norm, _, _ = prepare_model_waveform_input(waveform)
                         prediction = model(waveform_norm)
-                        validation_loss = weighted_temperature_loss(prediction, target, weights)
+                        validation_loss, validation_parts = _point_field_objective(
+                            prediction,
+                            target,
+                            weights,
+                            training_mode=self.config.training_mode,
+                            physics_residual_weight=self.config.physics_residual_weight,
+                            point_physics=point_physics,
+                        )
                         sample_count = int(waveform.shape[0])
                         validation_loss_total += float(validation_loss.detach().cpu()) * sample_count
+                        for key in validation_component_totals:
+                            validation_component_totals[key] += (
+                                float(validation_parts[key].detach().cpu()) * sample_count
+                            )
                         validation_abs_error_total += float((prediction - target).abs().sum().detach().cpu())
                         validation_samples += sample_count
                         validation_values += int(target.numel())
@@ -520,6 +599,18 @@ class ReconstructionTrainer:
                 )
                 epoch_stats["validation_loss"] = validation_mean
                 epoch_stats["validation_temperature_mae_k"] = validation_mae_k
+                epoch_stats["validation_field_loss"] = (
+                    validation_component_totals["field_loss"]
+                    / max(validation_samples, 1)
+                )
+                epoch_stats["validation_smoothness_loss"] = (
+                    validation_component_totals["smoothness_loss"]
+                    / max(validation_samples, 1)
+                )
+                epoch_stats["validation_physics_residual_loss"] = (
+                    validation_component_totals["physics_residual_loss"]
+                    / max(validation_samples, 1)
+                )
                 if validation_mean < best_validation_loss:
                     best_validation_loss = validation_mean
                     best_validation_mae_k = validation_mae_k
@@ -606,6 +697,9 @@ class ReconstructionTrainer:
             "chunk_size": int(model.chunk_size),
             "normalization": dict(dataset.normalization),
             "sampling_metadata": dict(dataset.sampling_metadata),
+            "point_physics": (
+                point_physics.metadata() if point_physics is not None else None
+            ),
             "training_summary": training_summary,
         }, checkpoint_path)
         (report_dir / "training_summary.json").write_text(
@@ -878,11 +972,6 @@ class OnlineUpdater:
                 "固定节点增量训练需要 direct_point_field checkpoint，"
                 f"支持版本 {SUPPORTED_POINT_FIELD_CHECKPOINT_VERSIONS}"
             )
-        if self.config.training_mode != "normal":
-            raise ValueError(
-                "固定节点 direct_point_field 暂不支持 residual_pinn；"
-                "请将训练模式设为 normal"
-            )
         if int(state.get("point_count", 0)) != dataset.point_count:
             raise ValueError("固定节点增量训练的 checkpoint 与 manifest 点数不一致")
         checkpoint_waveform_length = int(
@@ -897,6 +986,10 @@ class OnlineUpdater:
             if not np.isclose(float(state.get("normalization", {}).get(key, np.nan)),
                               float(dataset.normalization.get(key, np.nan))):
                 raise ValueError(f"固定节点增量训练标准化参数不一致: {key}")
+        checkpoint_sampling = state.get("sampling_metadata", {})
+        for key in ("sampling_version", "source_mesh_fingerprint"):
+            if checkpoint_sampling.get(key) != dataset.sampling_metadata.get(key):
+                raise ValueError(f"固定节点增量训练采样定义不一致: {key}")
         model = DirectPointFieldModel(
             dataset.point_count,
             hidden_dim=self.config.hidden_dim,
@@ -911,24 +1004,75 @@ class OnlineUpdater:
             with torch.no_grad():
                 model.weight_cnn.fill_(float(self.config.fixed_weight_cnn))
                 model.weight_lstm.fill_(float(self.config.fixed_weight_lstm))
+        point_physics = (
+            PointPhysicsOperator(
+                dataset.point_coordinates_m,
+                dataset.point_node_ids,
+                dataset.constituent_material_ids,
+                dataset.point_interface_side,
+            ).to(self.device)
+            if self.config.training_mode == "residual_pinn"
+            else None
+        )
         model.train()
         loader = DataLoader(dataset, batch_size=self.config.batch_size, shuffle=True)
         optimizer = torch.optim.Adam(model.parameters(), lr=self.config.learning_rate * 0.2)
         history: list[dict[str, float | str]] = []
-        for epoch in tqdm(range(self.config.online_epochs), desc="incremental[direct_point_field]", unit="epoch"):
-            total = 0.0; batches = 0
+        for epoch in tqdm(
+            range(self.config.online_epochs),
+            desc=f"incremental[direct_point_field:{self.config.training_mode}]",
+            unit="epoch",
+        ):
+            total = 0.0
+            total_mae_k = 0.0
+            component_totals = {
+                "field_loss": 0.0,
+                "smoothness_loss": 0.0,
+                "physics_residual_loss": 0.0,
+            }
+            batches = 0
             for batch in loader:
                 waveform = batch["waveform"].to(self.device)
                 target = batch["field"].to(self.device)
                 weights = batch["sample_weights"].to(self.device)
-                optimizer.zero_grad(); waveform_norm, _, _ = prepare_model_waveform_input(waveform)
-                loss = weighted_temperature_loss(model(waveform_norm), target, weights)
-                loss.backward(); optimizer.step(); total += float(loss.detach().cpu()); batches += 1
+                optimizer.zero_grad()
+                waveform_norm, _, _ = prepare_model_waveform_input(waveform)
+                prediction = model(waveform_norm)
+                loss, loss_parts = _point_field_objective(
+                    prediction,
+                    target,
+                    weights,
+                    training_mode=self.config.training_mode,
+                    physics_residual_weight=self.config.physics_residual_weight,
+                    point_physics=point_physics,
+                )
+                loss.backward()
+                optimizer.step()
+                total += float(loss.detach().cpu())
+                for key in component_totals:
+                    component_totals[key] += float(loss_parts[key].detach().cpu())
+                total_mae_k += (
+                    float((prediction.detach() - target).abs().mean().cpu())
+                    * dataset.temperature_std_k
+                )
+                batches += 1
             value = total / max(batches, 1)
-            history.append({"epoch": float(epoch + 1), "training_mode": "direct_point_field",
-                            "mean_epoch_loss": value, "total_loss": value, "field_loss": value,
-                            "acoustic_loss": 0.0, "temperature_loss": 0.0,
-                            "smoothness_loss": 0.0, "physics_residual_loss": 0.0})
+            history.append({
+                "epoch": float(epoch + 1),
+                "training_mode": self.config.training_mode,
+                "mean_epoch_loss": value,
+                "total_loss": value,
+                "field_loss": component_totals["field_loss"] / max(batches, 1),
+                "temperature_mae_k": total_mae_k / max(batches, 1),
+                "acoustic_loss": 0.0,
+                "temperature_loss": 0.0,
+                "smoothness_loss": (
+                    component_totals["smoothness_loss"] / max(batches, 1)
+                ),
+                "physics_residual_loss": (
+                    component_totals["physics_residual_loss"] / max(batches, 1)
+                ),
+            })
         config_dict = {
             key: (str(value) if isinstance(value, Path) else value)
             for key, value in asdict(self.config).items()
@@ -945,6 +1089,9 @@ class OnlineUpdater:
             "history": history,
             "base_checkpoint": str(base_checkpoint),
             "incremental_stamp": stamp,
+            "point_physics": (
+                point_physics.metadata() if point_physics is not None else None
+            ),
         })
         torch.save(updated, output_path)
         ReconstructionTrainer(self.config)._save_history_artifacts(history, artifact_name=stamp, report_dir=report_dir)

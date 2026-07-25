@@ -212,9 +212,6 @@ class TrainTab(BaseCommandTab):
         model_kind = manifest_model_kind(train_manifest, repo_root=self.repo_root)
         if model_kind != "material_collection" and validation_manifest is None:
             raise ValueError(f"训练数据集文件夹缺少 validation manifest: {path}")
-        training_mode = str(self.runtime["training_mode"].get())  # type: ignore[union-attr]
-        if model_kind in {"direct_point_field", "material_collection"} and training_mode != "normal":
-            raise ValueError("固定节点训练目前仅支持 normal 模式，请修改训练模式。")
         if self.separate_materials.get() and model_kind != "material_collection":
             raise ValueError("分别训练需要选择多材料建库生成的 material_collection.json。")
         epochs = self.runtime["epochs"].get()  # type: ignore[union-attr]
