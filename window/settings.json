@@ -1,7 +1,7 @@
 {
   "$schema_version": 1,
   "common": {
-    "data_root": "D:/Desktop/code/ai_model/database",
+    "data_root": "database",
     "result_root": "result",
     "device": "cuda",
     "training_mode": "normal",

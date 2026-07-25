@@ -541,9 +541,26 @@ def _validate_material_collection(
     for raw_entry in collection["materials"]:
         entry = dict(raw_entry)
         material_key = str(entry["material_key"])
-        material_reports[material_key] = validator.validate_requirement_33(
+        material_report = validator.validate_requirement_33(
             resolve_collection_manifest(collection_path, entry, "combined")
         )
+        train_manifest = resolve_collection_manifest(collection_path, entry, "train")
+        train_payload = json.loads(train_manifest.read_text(encoding="utf-8"))
+        train_record_count = len(train_payload.get("records", []))
+        material_report["simulation_records"] = train_record_count
+        material_report["meets_3_3_min_simulation"] = (
+            train_record_count >= config.min_simulation_samples
+        )
+        material_report["meets_3_3"] = all(
+            bool(material_report[key])
+            for key in (
+                "meets_3_3_min_simulation",
+                "meets_3_3_min_experiment",
+                "meets_3_3_material_count",
+                "meets_3_3_temperature_span",
+            )
+        )
+        material_reports[material_key] = material_report
     total_records = sum(int(item["total_records"]) for item in material_reports.values())
     simulation_records = sum(
         int(item["simulation_records"]) for item in material_reports.values()
@@ -587,8 +604,8 @@ def _validate_material_collection(
         "meets_3_3_temperature_span": bool(
             lower_bounds
             and upper_bounds
-            and min(lower_bounds) <= config.min_temperature_k
-            and max(upper_bounds) >= config.max_temperature_k
+            and min(lower_bounds) <= validator.validation_min_temperature_k
+            and max(upper_bounds) >= validator.validation_max_temperature_k
         ),
     }
     report["meets_3_3"] = all(

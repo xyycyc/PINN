@@ -66,6 +66,9 @@ class DataRecord:
 
 
 class DatabaseBuilder:
+    validation_min_temperature_k = 350.0
+    validation_max_temperature_k = 1450.0
+
     def __init__(self, config: AIModelConfig | None = None):
         self.config = config or AIModelConfig()
         self.config.ensure_dirs()
@@ -415,8 +418,8 @@ class DatabaseBuilder:
             "meets_3_3_material_count": len(materials) >= 3,
             "meets_3_3_temperature_span": bool(
                 temperatures
-                and min(temperatures) <= self.config.min_temperature_k
-                and max(temperatures) >= self.config.max_temperature_k
+                and min(temperatures) <= self.validation_min_temperature_k
+                and max(temperatures) >= self.validation_max_temperature_k
             ),
         }
         report["meets_3_3"] = all(
