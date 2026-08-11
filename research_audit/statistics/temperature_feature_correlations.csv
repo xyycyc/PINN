@@ -1,0 +1,56 @@
+dataset,domain,temperature_unit,temperature_semantics,feature,sample_count,pearson_r,spearman_rho,mutual_information_binned,linear_r2,trend_direction
+metal,simulation,K,solver case/field temperature tag,peak_time_s,200,0.9871513959475541,1.0,1.6223061414246374,0.9744678785212056,increasing
+metal,simulation,K,solver case/field temperature tag,peak_time_fraction,200,0.9871498859202388,1.0,1.6223061414246374,0.9744648972723401,increasing
+metal,simulation,K,solver case/field temperature tag,peak_abs,200,0.998222678296173,1.0,1.5620967304872262,0.9964485154647856,increasing
+metal,simulation,K,solver case/field temperature tag,rms,200,0.9850562137456561,1.0,1.4707549822755779,0.9703357442389277,increasing
+metal,simulation,K,solver case/field temperature tag,energy_mean_square,200,0.9854743806554478,1.0,1.481882225588529,0.9711597549282381,increasing
+metal,simulation,K,solver case/field temperature tag,dominant_frequency_hz,200,-0.2179041053847731,-0.3112877821945549,0.8319063844462922,0.04748219914353846,decreasing
+metal,simulation,K,solver case/field temperature tag,dominant_frequency_fraction,200,0.046009198384976045,-0.2585284632115803,1.0704694987811287,0.0021168463360280443,decreasing
+metal,simulation,K,solver case/field temperature tag,spectral_centroid_hz,200,-0.9944436916366747,-0.9913297832445813,1.6807233981304293,0.988918255835978,decreasing
+metal,simulation,K,solver case/field temperature tag,spectral_centroid_fraction,200,0.99963243198446,1.0,1.8361506925868514,0.9992649990751663,increasing
+metal,simulation,K,solver case/field temperature tag,spectral_bandwidth_hz,200,-0.6418757831626937,-0.597265431635791,0.511804261360531,0.4120045210107216,decreasing
+metal,simulation,K,solver case/field temperature tag,spectral_bandwidth_fraction,200,-0.6121281948655745,-0.5579704492612316,0.510886700937684,0.37470092694938684,decreasing
+metal_10times_dlm,experiment,unknown,numeric filename; physical meaning and unit unconfirmed,peak_time_s,375,0.04004452311539266,-0.0041008716674811275,0.005396362245020257,0.0016035638315390344,weak_or_flat
+metal_10times_dlm,experiment,unknown,numeric filename; physical meaning and unit unconfirmed,peak_time_fraction,375,0.02804255627116414,0.01105931347747362,0.012764722939896334,0.000786384962221387,weak_or_flat
+metal_10times_dlm,experiment,unknown,numeric filename; physical meaning and unit unconfirmed,peak_abs,375,0.16125865027597924,0.16489180306612433,0.07257306335403278,0.026004352288830024,increasing
+metal_10times_dlm,experiment,unknown,numeric filename; physical meaning and unit unconfirmed,rms,375,-0.608681082496595,-0.6180193066242018,0.37395353030076517,0.37049266018922655,decreasing
+metal_10times_dlm,experiment,unknown,numeric filename; physical meaning and unit unconfirmed,energy_mean_square,375,-0.6055130854101459,-0.6180193066242018,0.3728417156769201,0.3666460966029145,decreasing
+metal_10times_dlm,experiment,unknown,numeric filename; physical meaning and unit unconfirmed,dominant_frequency_hz,375,-0.041622363942814045,-0.04181038215740095,0.005396362245020257,0.0017324211801877931,weak_or_flat
+metal_10times_dlm,experiment,unknown,numeric filename; physical meaning and unit unconfirmed,dominant_frequency_fraction,375,-0.041622363942814114,-0.04181038215740095,0.005396362245020257,0.0017324211801881262,weak_or_flat
+metal_10times_dlm,experiment,unknown,numeric filename; physical meaning and unit unconfirmed,spectral_centroid_hz,375,-0.5658269213601546,-0.6058217555843366,0.3456928167531398,0.3201601049359106,decreasing
+metal_10times_dlm,experiment,unknown,numeric filename; physical meaning and unit unconfirmed,spectral_centroid_fraction,375,-0.5658269213601544,-0.6058217555843366,0.3456928167531398,0.32016010493591074,decreasing
+metal_10times_dlm,experiment,unknown,numeric filename; physical meaning and unit unconfirmed,spectral_bandwidth_hz,375,0.48107495416496493,0.5408600392350593,0.20452245653464962,0.23143311152482315,increasing
+metal_10times_dlm,experiment,unknown,numeric filename; physical meaning and unit unconfirmed,spectral_bandwidth_fraction,375,0.48107495416496504,0.5408600392350593,0.20452245653464962,0.23143311152482293,increasing
+silicon,simulation,K,solver case/field temperature tag,peak_time_s,200,0.9986251003784262,0.9986499611934064,1.631068343085876,0.9972520911058221,increasing
+silicon,simulation,K,solver case/field temperature tag,peak_time_fraction,200,0.9986217315754735,0.9986045854107986,1.631068343085876,0.9972453627747966,increasing
+silicon,simulation,K,solver case/field temperature tag,peak_abs,200,0.9998008221797378,0.9999984999624993,1.9109314032627929,0.9996016840312805,increasing
+silicon,simulation,K,solver case/field temperature tag,rms,200,0.9998972748255953,1.0,1.8495807636035966,0.9997945602036525,increasing
+silicon,simulation,K,solver case/field temperature tag,energy_mean_square,200,0.9999257164456102,1.0,1.8995343681451007,0.9998514384092678,increasing
+silicon,simulation,K,solver case/field temperature tag,dominant_frequency_hz,200,0.21930694597121944,-0.44176177594645055,0.6771696581401078,0.04809553655122334,decreasing
+silicon,simulation,K,solver case/field temperature tag,dominant_frequency_fraction,200,0.3506260423284575,-0.12902170937505175,0.18641295197335112,0.122938621558917,decreasing
+silicon,simulation,K,solver case/field temperature tag,spectral_centroid_hz,200,-0.8536246652151442,-0.8863331583289583,1.2253717104826198,0.7286750690636683,decreasing
+silicon,simulation,K,solver case/field temperature tag,spectral_centroid_fraction,200,0.9925194742975332,0.9976854421360535,1.5452746269544573,0.985094906859852,increasing
+silicon,simulation,K,solver case/field temperature tag,spectral_bandwidth_hz,200,-0.23881214815415006,-0.19276681917047928,0.6645762192712585,0.057031242105999747,decreasing
+silicon,simulation,K,solver case/field temperature tag,spectral_bandwidth_fraction,200,-0.20700357596536784,-0.16086852171304286,0.6853582074948239,0.04285048046244988,decreasing
+wumu,simulation,K,solver case/field temperature tag,peak_time_s,1000,0.9993608460670128,0.9997131373454449,1.6787233248794151,0.9987221006517751,increasing
+wumu,simulation,K,solver case/field temperature tag,peak_time_fraction,1000,0.999359391528173,0.9997131373454449,1.6787233248794151,0.9987191934355601,increasing
+wumu,simulation,K,solver case/field temperature tag,peak_abs,1000,0.9993734088762168,0.999969135969136,1.6011022026618555,0.9987472103688704,increasing
+wumu,simulation,K,solver case/field temperature tag,rms,1000,0.9887248596748852,0.998958086958087,1.6584056725749063,0.9775768481391217,increasing
+wumu,simulation,K,solver case/field temperature tag,energy_mean_square,1000,0.9895580165660398,0.998958086958087,1.662769402366782,0.9792250681501146,increasing
+wumu,simulation,K,solver case/field temperature tag,dominant_frequency_hz,1000,-0.1714174668569575,-0.3130047112055775,1.254730458251136,0.02938394794365584,decreasing
+wumu,simulation,K,solver case/field temperature tag,dominant_frequency_fraction,1000,0.19711494300392973,-0.0025373661502054155,0.4042612037055304,0.03885430075544227,weak_or_flat
+wumu,simulation,K,solver case/field temperature tag,spectral_centroid_hz,1000,0.5495115801600825,0.4635825195825196,0.6038916581046302,0.30196297673003103,increasing
+wumu,simulation,K,solver case/field temperature tag,spectral_centroid_fraction,1000,0.9947097887805487,0.993899901899902,1.4676246248016198,0.9894475638958441,increasing
+wumu,simulation,K,solver case/field temperature tag,spectral_bandwidth_hz,1000,0.7353139043977496,0.8249402609402611,0.5757131362329794,0.5406865380006629,increasing
+wumu,simulation,K,solver case/field temperature tag,spectral_bandwidth_fraction,1000,0.7527779334195046,0.8478718998719,0.5994166978191167,0.5666746170433404,increasing
+wumu_post0_waveforms,experiment,degC,filename-encoded nominal value; physical meaning unconfirmed,peak_time_s,213,0.44333273336678847,0.2938480983733552,0.22653948822775916,0.19654391247446823,increasing
+wumu_post0_waveforms,experiment,degC,filename-encoded nominal value; physical meaning unconfirmed,peak_time_fraction,213,0.4433327333667888,0.2936935542587382,0.22653948822775916,0.19654391247446823,increasing
+wumu_post0_waveforms,experiment,degC,filename-encoded nominal value; physical meaning unconfirmed,peak_abs,213,0.19208345865975932,0.19026991650209685,0.1369262066255985,0.03689605509069549,increasing
+wumu_post0_waveforms,experiment,degC,filename-encoded nominal value; physical meaning unconfirmed,rms,213,0.3546432728913186,0.3270925504762416,0.20518691308697815,0.12577185100706645,increasing
+wumu_post0_waveforms,experiment,degC,filename-encoded nominal value; physical meaning unconfirmed,energy_mean_square,213,0.3603769276356019,0.3270925504762416,0.186151172232221,0.12987152997207596,increasing
+wumu_post0_waveforms,experiment,degC,filename-encoded nominal value; physical meaning unconfirmed,dominant_frequency_hz,213,0.18736989132026832,0.19701374405296931,0.30117974685938126,0.03510747617336907,increasing
+wumu_post0_waveforms,experiment,degC,filename-encoded nominal value; physical meaning unconfirmed,dominant_frequency_fraction,213,0.18736989132026827,0.19701374405296931,0.30117974685938126,0.0351074761733694,increasing
+wumu_post0_waveforms,experiment,degC,filename-encoded nominal value; physical meaning unconfirmed,spectral_centroid_hz,213,-0.3362897776083351,-0.34173958845876035,0.2143718653075987,0.1130908145238636,decreasing
+wumu_post0_waveforms,experiment,degC,filename-encoded nominal value; physical meaning unconfirmed,spectral_centroid_fraction,213,-0.3362897776083351,-0.34173958845876035,0.2143718653075987,0.11309081452386349,decreasing
+wumu_post0_waveforms,experiment,degC,filename-encoded nominal value; physical meaning unconfirmed,spectral_bandwidth_hz,213,-0.42528011939915344,-0.44439428683056087,0.25279319877352013,0.18086317995615808,decreasing
+wumu_post0_waveforms,experiment,degC,filename-encoded nominal value; physical meaning unconfirmed,spectral_bandwidth_fraction,213,-0.4252801193991534,-0.44439428683056087,0.25279319877352013,0.1808631799561582,decreasing

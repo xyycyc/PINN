@@ -1,0 +1,15 @@
+# Source provenance map
+
+`source` 代码字段仅作线索；`actual_origin` 由目录、配置、生成脚本和采集头联合判定。
+
+| Dataset | Code label | Actual origin | Confidence | Evidence |
+|---|---|---|---|---|
+| metal | experiment_case | simulation | HIGH | Per-case heat/ultrasonic solver configs, FEM mesh reference, generated receiver_signal.csv, and solver logs under RAW_DATA_ROOT/metal. |
+| silicon | experiment_case | simulation | HIGH | Per-case heat/ultrasonic solver configs, generated thermal field CSV, receiver output, and solver logs under RAW_DATA_ROOT/silicon. |
+| wumu | experiment_case | simulation | HIGH | CalibrationBatch solver workspaces, mesh/thermal references, generated FEM fields and FDTD/FEM-style ultrasonic logs under RAW_DATA_ROOT/wumu. |
+| metal_10times_dlm | experiment | physical_experiment | HIGH | DLM3000 oscilloscope headers contain CH1, volts, 2.5 GHz sample rate, acquisition date/time, and ten repetition folders. |
+| wumu_post0_waveforms | experiment | processed_experiment | HIGH | Timestamped TxxC filenames plus residual/filtered columns; builder identifies source CSV and derives post-zero/resampled waveforms. |
+| wumu_exp_manifest_fields | experiment | processed_experiment | HIGH | Fields are code-generated uniform scalar proxies/zeros; no measured spatial coordinates or thermal-imaging source exists. |
+| legacy_metal_matrix_fields | experiment | processed_experiment | HIGH | DatabaseBuilder creates zero-valued field arrays for imported oscilloscope CSVs; they are not measured temperature fields. |
+
+最重要的纠正：case pipeline 将 1,400 个仿真 case 写成 `source=experiment_case`；这不改变其 simulation provenance。

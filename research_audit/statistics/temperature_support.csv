@@ -1,0 +1,6 @@
+dataset,domain,unit,min,max,semantics,comparable_support_k_min,comparable_support_k_max
+metal,simulation,K,300.0,1500.0,solver temperature field/case tag,300.0,1500.0
+silicon,simulation,K,300.0,1500.0,solver temperature field/case tag,300.0,1500.0
+wumu,simulation,K,300.0,1500.0,solver temperature field/case tag,300.0,1500.0
+wumu_post0_waveforms,experiment,degC,29.0,169.0,filename-encoded nominal value; physical measurement semantics unknown,302.15,442.15
+metal_10times_dlm,experiment,unknown,12.0,210.0,numeric filename; physical meaning and unit unknown,,

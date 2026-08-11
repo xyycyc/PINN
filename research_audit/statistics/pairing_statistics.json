@@ -1,0 +1,34 @@
+{
+  "simulation": [
+    {
+      "dataset": "metal",
+      "case_count": 200,
+      "strict_waveform_field_pairs": 200,
+      "failed_pairs": 0,
+      "failure_examples": []
+    },
+    {
+      "dataset": "silicon",
+      "case_count": 200,
+      "strict_waveform_field_pairs": 200,
+      "failed_pairs": 0,
+      "failure_examples": []
+    },
+    {
+      "dataset": "wumu",
+      "case_count": 1000,
+      "strict_waveform_field_pairs": 1000,
+      "failed_pairs": 0,
+      "failure_examples": []
+    }
+  ],
+  "simulation_case_count": 1400,
+  "simulation_exact_waveform_field_pairs": 1400,
+  "simulation_pair_failures": 0,
+  "sim_real_exact_pair_count": 0,
+  "sim_real_approximate_pair_count": 0,
+  "simulation_unpaired_count": 1400,
+  "experiment_unpaired_count": 588,
+  "is_fundamentally_unpaired": true,
+  "rationale": "No experiment record contains a simulation case/configuration identifier; shared temperatures alone were not treated as pairing."
+}

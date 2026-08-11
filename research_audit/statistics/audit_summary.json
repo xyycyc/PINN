@@ -1,0 +1,127 @@
+{
+  "simulation": {
+    "datasets": [
+      "metal",
+      "silicon",
+      "wumu"
+    ],
+    "case_count": 1400,
+    "temperature_range_k": [
+      300.0,
+      1500.0
+    ],
+    "has_full_field": true,
+    "waveform_contract": {
+      "per_material_native_rate": true,
+      "duration_s_approx": 2e-05,
+      "sampling_rate_hz_by_dataset": {
+        "metal": [
+          1225500000.0,
+          1267400000.0
+        ],
+        "silicon": [
+          331500000.0,
+          341200000.0
+        ],
+        "wumu": [
+          156650000.0,
+          168100000.0
+        ]
+      },
+      "legacy_processing": "fixed native-rate prefix of 1097 points"
+    }
+  },
+  "experiment": {
+    "datasets": [
+      "metal_10times_dlm",
+      "wumu_post0_waveforms"
+    ],
+    "case_count": 588,
+    "temperature_range_k": [
+      302.15,
+      442.15
+    ],
+    "temperature_label_semantics": "wumu: filename-encoded nominal degrees Celsius; physical measurement meaning unknown (USER CONFIRMATION REQUIRED). metal: numeric filename unit/meaning unknown.",
+    "has_full_field_ground_truth": false,
+    "available_weak_labels": [
+      "wumu filename nominal temperature in degrees Celsius (measurement semantics unknown)",
+      "metal numeric filename label (unit and semantics unknown)"
+    ],
+    "raw_measured_quantities": [
+      "DLM3000 CH1 voltage traces"
+    ],
+    "processed_quantities": [
+      "wumu raw/filtered residual waveform"
+    ]
+  },
+  "pairing": {
+    "exact_pairs": 0,
+    "approximate_pairs": 0,
+    "is_fundamentally_unpaired": true,
+    "simulation_internal_waveform_field_exact_pairs": 1400
+  },
+  "domain_gap": {
+    "domain_classifier_accuracy": 1.0,
+    "domain_classifier_auc": 1.0,
+    "qualitative_severity": "CRITICAL",
+    "normalization_scope": "Amplitude-free, time-fraction and Nyquist-relative features; not full acquisition harmonization."
+  },
+  "temperature_information": {
+    "simulation": {
+      "present": true,
+      "strength": "strong monotonic trends"
+    },
+    "experiment": {
+      "present": true,
+      "strength": "moderate feature trends with batch/label uncertainty"
+    },
+    "cross_domain_trend_consistency": "PARTIAL: peak time and RMS directions agree for wumu; spectral trends disagree."
+  },
+  "support": {
+    "simulation_temperature_range_k": [
+      300.0,
+      1500.0
+    ],
+    "experiment_temperature_range_k": [
+      302.15,
+      442.15
+    ],
+    "shared_temperature_range_k": [
+      302.15,
+      442.15
+    ],
+    "experiment_out_of_simulation_support": false,
+    "caveat": "Only scalar numeric range is comparable; geometry/sensor/excitation support is unknown."
+  },
+  "physics": {
+    "current_pinn_reusable_as_is": false,
+    "assessment": "Engineering smoothness/graph-Laplacian regularizer; not a dimensional heat-equation model."
+  },
+  "recommendation": {
+    "problem_classification": [
+      "covariate_shift",
+      "likely_conditional_shift",
+      "weak_supervision",
+      "large_physical_mismatch",
+      "insufficient_real_validation"
+    ],
+    "recommended_method_family": "metadata/measurement-operator recovery + simulator calibration/new matched cases, then simulation pretraining with condition-aware weak supervision",
+    "future_new_repository_recommended": true,
+    "additional_data_required": [
+      "temperature label semantics",
+      "experiment geometry and acquisition metadata",
+      "known-coordinate temperature measurements",
+      "calibrated IR subset",
+      "experiment-matched simulation cases"
+    ],
+    "main_scientific_risk": "Current real supervision cannot identify or validate a 2D temperature field; predictions may reproduce only the simulation prior.",
+    "current_full_field_paper_feasible": false,
+    "conditional_independent_project_feasible": true
+  },
+  "artifact_warnings": [
+    "case_pipeline source=experiment_case labels simulation data",
+    "existing wumu_exp temperature_k numerically equals Celsius filenames",
+    "existing wumu_exp manifest has 251 records while current source directory has 213 CSVs",
+    "proxy/zero experimental fields are not measured ground truth"
+  ]
+}

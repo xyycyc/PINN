@@ -63,3 +63,13 @@ audit/
 *.log
 *.tmp
 *.temp
+
+# Research audit: allow lightweight, derived statistics and reports only.
+!research_audit/
+!research_audit/**/*.md
+!research_audit/**/*.json
+!research_audit/**/*.csv
+!research_audit/**/*.py
+!research_audit/**/*.yaml
+!research_audit/**/*.yml
+!research_audit/**/*.png

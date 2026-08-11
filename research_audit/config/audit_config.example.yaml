@@ -1,0 +1,9 @@
+raw_data_root: "E:/pinn_data"
+output_root: "research_audit"
+repository_raw_root: "database/raw"
+random_seed: 42
+
+analysis:
+  waveform_sample_limit: null
+  domain_classifier: true
+  pca: true

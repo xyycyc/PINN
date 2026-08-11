@@ -1,0 +1,142 @@
+{
+  "diagnostic_only": true,
+  "comparison": "wumu simulation vs wumu post-zero processed experiment",
+  "raw_feature_classifier": {
+    "accuracy": 1.0,
+    "balanced_accuracy": 1.0,
+    "auc": 1.0,
+    "f1": 1.0,
+    "sample_count": 426,
+    "simulation_count": 213,
+    "experiment_count": 213,
+    "features": [
+      "log_rms",
+      "log_peak_abs",
+      "log_energy",
+      "crest_factor",
+      "skewness",
+      "kurtosis",
+      "zero_crossing_rate",
+      "peak_time_fraction",
+      "dominant_frequency_fraction",
+      "spectral_centroid_fraction",
+      "spectral_bandwidth_fraction"
+    ],
+    "split": "5-fold deterministic group split; experiment repeats grouped by filename temperature",
+    "folds": [
+      {
+        "fold": 0,
+        "test_samples": 92,
+        "accuracy": 1.0,
+        "balanced_accuracy": 1.0,
+        "auc": 1.0,
+        "f1": 1.0
+      },
+      {
+        "fold": 1,
+        "test_samples": 89,
+        "accuracy": 1.0,
+        "balanced_accuracy": 1.0,
+        "auc": 1.0,
+        "f1": 1.0
+      },
+      {
+        "fold": 2,
+        "test_samples": 103,
+        "accuracy": 1.0,
+        "balanced_accuracy": 1.0,
+        "auc": 1.0,
+        "f1": 1.0
+      },
+      {
+        "fold": 3,
+        "test_samples": 77,
+        "accuracy": 1.0,
+        "balanced_accuracy": 1.0,
+        "auc": 1.0,
+        "f1": 1.0
+      },
+      {
+        "fold": 4,
+        "test_samples": 65,
+        "accuracy": 1.0,
+        "balanced_accuracy": 1.0,
+        "auc": 1.0,
+        "f1": 1.0
+      }
+    ]
+  },
+  "contract_normalized_classifier": {
+    "accuracy": 1.0,
+    "balanced_accuracy": 1.0,
+    "auc": 1.0,
+    "f1": 1.0,
+    "sample_count": 426,
+    "simulation_count": 213,
+    "experiment_count": 213,
+    "features": [
+      "crest_factor",
+      "skewness",
+      "kurtosis",
+      "zero_crossing_rate",
+      "peak_time_fraction",
+      "dominant_frequency_fraction",
+      "spectral_centroid_fraction",
+      "spectral_bandwidth_fraction"
+    ],
+    "split": "5-fold deterministic group split; experiment repeats grouped by filename temperature",
+    "folds": [
+      {
+        "fold": 0,
+        "test_samples": 92,
+        "accuracy": 1.0,
+        "balanced_accuracy": 1.0,
+        "auc": 1.0,
+        "f1": 1.0
+      },
+      {
+        "fold": 1,
+        "test_samples": 89,
+        "accuracy": 1.0,
+        "balanced_accuracy": 1.0,
+        "auc": 1.0,
+        "f1": 1.0
+      },
+      {
+        "fold": 2,
+        "test_samples": 103,
+        "accuracy": 1.0,
+        "balanced_accuracy": 1.0,
+        "auc": 1.0,
+        "f1": 1.0
+      },
+      {
+        "fold": 3,
+        "test_samples": 77,
+        "accuracy": 1.0,
+        "balanced_accuracy": 1.0,
+        "auc": 1.0,
+        "f1": 1.0
+      },
+      {
+        "fold": 4,
+        "test_samples": 65,
+        "accuracy": 1.0,
+        "balanced_accuracy": 1.0,
+        "auc": 1.0,
+        "f1": 1.0
+      }
+    ]
+  },
+  "accuracy": 1.0,
+  "balanced_accuracy": 1.0,
+  "auc": 1.0,
+  "f1": 1.0,
+  "mmd_rbf_standardized_features": 0.9873849743918073,
+  "mean_feature_wasserstein_standardized": 1.7399964123786735,
+  "pca_explained_variance_ratio": [
+    0.8213778943052286,
+    0.12481131402825352
+  ],
+  "interpretation": "High separability after contract-normalized shape/spectral features indicates a substantive gap beyond amplitude units alone."
+}
