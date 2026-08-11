@@ -2,6 +2,9 @@
 .vscode/
 .codex_tools/
 
+# Local client delivery copy.
+/jiaofu/
+
 # Python caches and test/build by-products.
 __pycache__/
 *.py[cod]
