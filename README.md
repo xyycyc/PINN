@@ -26,6 +26,8 @@
 
 仿真数据覆盖 300～1500 K，记录超声全波形、物理节点坐标、节点温度、材料组分、边界身份和接触界面身份。实验数据用于实际波形输入、温度场预测和代表性测点对比。
 
+项目文档与交付目标统一表述为 300～1500 K。程序执行需求核查时，以训练集仿真记录数作为样本数量口径，并采用 350～1450 K 的端点容差判断温度覆盖，避免有限采样或浮点误差导致覆盖范围误判。
+
 ### 2.2 温度重构精度
 
 四类温度场反演工况采用五个代表性测点平均温度的相对误差进行评价：
@@ -126,7 +128,7 @@ $$
 - CNN–LSTM–BP 模型训练、保存和加载；
 - 数据监督与 PINN 物理约束融合；
 - 一维、二维、稳态和瞬态温度场预测；
-- 分材料完整模型与材料路由管理；
+- 多材料共享模型，以及分材料完整模型与材料路由管理；
 - 五测点精度、全场精度和分区精度分析；
 - GPU 推理计时与传统反演方法效率比较；
 - 在线增量训练，以及基于参数冻结与部分权重更新的迁移学习扩展设计；
@@ -137,7 +139,7 @@ $$
 
 ## 5. 环境准备
 
-运行环境使用 Python 3.13 或更高版本，Fortran 编译器版本不低于 14.2.0。在 `ai_model` 的上一级目录打开 PowerShell：
+推荐使用 Python 3.10 或更高版本。在 `ai_model` 的上一级目录打开 PowerShell：
 
 ```powershell
 cd D:\Desktop\code
@@ -271,13 +273,19 @@ python -m ai_model.window
 
 在训练页选择数据集目录或 `material_collection.json`，设置任务维度、稳瞬态模式、材料规则名称、设备、训练轮数和早停参数。
 
-系统采用分材料模型与材料路由机制，根据材料类型调用对应的完整温度场重构模型。训练时为每种材料生成独立 checkpoint 和材料路由文件，训练轮数对每种材料分别生效。验证清单用于每轮评估和最佳模型选择，训练完成后模型按规则登记，供预测与增量训练调用。程序保留混合清单组织方式，供既有运行配置使用。
+多材料任务提供两种管理方式：
+
+- 共享模型：将三类材料的训练清单合并后训练一个模型，作为默认方式；
+- 分材料模型：为每种材料训练完整 checkpoint，并生成材料路由文件。
+
+分材料训练中，训练轮数对每种材料分别生效；共享训练中，训练轮数对应整个混合数据集。验证清单用于每轮评估和最佳模型选择，训练完成后模型按规则登记，供预测与增量训练调用。
 
 ### 7.4 预测对比
 
 预测页可选择单材料测试清单、多材料集合或独立实验测试清单。
 
-- 系统读取材料集合和材料路由，根据样本材料类型自动选择对应的完整 checkpoint；
+- 共享模型根据集合清单依次预测各材料数据；
+- 分材料模型根据材料路由自动选择对应 checkpoint；
 - 二维输出生成完整 10,000 节点温度场；
 - 一维输出从二维场提取归一化 `x=0.5` 中心线；
 - 绘图功能生成真实值、预测值和误差对比图；
@@ -365,20 +373,37 @@ python -m ai_model train `
   --data-root database `
   --result-root result `
   --manifest ai_model/database/data_process/multi_material_v1_multi_material_temperature_field `
-  --train-name material_checkpoints_v1 `
+  --train-name multi_material_temperature_v1 `
   --checkpoint-name ai_model.pt `
   --rule-dimension two `
   --rule-mode steady `
   --rule-material multi_material `
   --device cuda `
   --early-stopping-patience 10 `
-  --epochs 500 `
-  --separate-materials
+  --epochs 500
 ```
 
-该命令为集合中的每种材料生成独立 checkpoint，并生成供预测阶段使用的材料路由文件。
+该命令默认训练一个多材料共享模型。如需为每种材料生成独立 checkpoint 和材料路由文件，在相同命令中增加：
+
+```text
+--separate-materials
+```
 
 ### 8.5 温度场预测
+
+共享多材料模型预测：
+
+```powershell
+python -m ai_model predict `
+  --data-root database `
+  --result-root result `
+  --manifest ai_model/database/data_process/multi_material_v1_multi_material_temperature_field/material_collection.json `
+  --checkpoint ai_model/result/train/checkpoint/multi_material_temperature_v1/ai_model.pt `
+  --predict-name multi_material_prediction `
+  --plots `
+  --prediction-dimension two `
+  --benchmark
+```
 
 分材料模型与材料路由预测：
 
