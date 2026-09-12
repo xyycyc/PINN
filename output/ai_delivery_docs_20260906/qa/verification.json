@@ -1,0 +1,26 @@
+[
+  {
+    "file": "01_AI模块程序使用说明.pdf",
+    "pages": 9,
+    "chars": 9436,
+    "sha256": "4aec9811016e59f4e37ee1d98905ded8c1c20cd2e8f2b82674db72beb8981e4e"
+  },
+  {
+    "file": "02_AI模块维护手册.pdf",
+    "pages": 4,
+    "chars": 3451,
+    "sha256": "e592ff25ea9c4d89ac1c185327c13404a190be2c1c46889e00bc63f4ab04969e"
+  },
+  {
+    "file": "03_AI模块程序调试维修方法.pdf",
+    "pages": 5,
+    "chars": 4945,
+    "sha256": "3ba296fbec3d6e5e1a5c2352e34c6e4f12ad8352428e9d9dbfeb2abeea6fbbe5"
+  },
+  {
+    "file": "04_AI模块培训记录.pdf",
+    "pages": 3,
+    "chars": 2855,
+    "sha256": "4da01dc9cc5bd6ca8f026083c24a05e62e2f2eb4494457834611c0b0b7239411"
+  }
+]

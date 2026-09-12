@@ -1,0 +1,366 @@
+第 1 页
+1. 系统概述
+ai_model 是面向多层材料、金属基复合材料和碳基/硅基复合材料的人工智能温度场
+重构系统。系统以超声全波形张量为直接输入，通过 CNN–LSTM–BP 融合网络学习波形
+传播特征与温度场之间的非线性映射，并将温度场数据监督与基于固定物理节点空间邻接
+关系的 PINN 物理约束设计相结合，实现一维、二维、稳态和瞬态温度场的智能重构。
+系统覆盖温度—声学参数数据库构建、超声波形导入与预处理、模型训练与保存、温
+度场预测、精度与效率评估、在线增量训练、迁移学习、多材料模型管理和结果导出。迁
+移学习方案采用参数冻结与部分权重更新的设计思路，为新增材料和新增数据的模型适配
+提供技术基础。Windows 图形化界面提供完整操作入口，Python 人工智能模块与 Fortran
+数值计算模块协同完成数据生成、模型训练、预测分析及全过程追溯。
+系统面向以下三类材料：
+1. 两层 W30Mo70 钨钼合金多层材料；
+2. W 基体/SiC 颗粒金属基复合材料；
+3. SiC 颗粒/CVI-SiC 基体硅基复合材料。
+2. 系统功能
+系统提供以下功能：
+• 三材料温度—声学参数数据库构建；
+• 超声全波形自动识别、导入、裁剪和平滑处理；
+• 仿真波形与有限元温度场自动配对；
+• 训练集、验证集和测试集按材料独立配置；
+• CNN–LSTM–BP 模型训练、保存和加载；
+• 数据监督与 PINN 物理约束融合；
+• 一维、二维、稳态和瞬态温度场预测；
+• 分材料完整模型与材料路由管理；
+• 五测点精度、全场精度和分区精度分析；
+• GPU 推理计时与传统反演方法效率比较；
+• 在线增量训练，以及基于参数冻结与部分权重更新的迁移学习；
+• checkpoint、数据格式与采样索引一致性检查；
+• Windows 图形化操作和命令行批处理；
+• CSV、NPZ、JSON 和图像结果导出；
+• 数据、模型、配置、日志和结果全过程追溯。
+第 2 页
+3. 环境准备
+运行环境使用 Python 3.13 或更高版本，Fortran 编译器版本不低于 14.2.0。特别强
+调：以下路径均为示例路径，实际使用时应替换为项目在本机的安装目录、数据目录和结
+果目录。项目在示例中
+在 ai_model 的上一级目录打开 PowerShell：
+cd D:\Desktop\code
+python --version
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+GPU 运行环境应安装与本机 CUDA 和显卡驱动相匹配的 PyTorch。Windows 图形界面
+使用 tkinter，可通过以下命令检查：
+python -c "import tkinter; print(tkinter.TkVersion)"
+检查系统入口：
+python -m ai_model --help
+本文中的 python -m ai_model ... 命令均在 ai_model 的上一级目录执行。
+4. 目录与数据组织
+默认输入根目录为 ai_model/database，默认输出根目录为 ai_model/result：
+ai_model/
+├── database/
+│ ├── raw/ # 原始实验与仿真数据
+│ ├── data_process/ # 建库后的清单、波形和温度场
+│ └── rule/ # 材料与模型规则登记
+├── result/
+│ ├── train/checkpoint/ # 模型文件
+│ ├── train/report/ # 训练报告和统计
+│ └── predict/
+│ ├── inference/ # 单次预测
+│ └── batch/ # 批量预测
+├── window/ # Windows 图形化界面
+└── cli.py # 命令行入口
+4.1 标准 case 数据
+系统支持分层和扁平两种 case 目录：
+worker_01/
+└── case_0000_T0300p000K/
+├── configs/
+│ └── *_ultrasonic_config.json
+├── heat/thermomechanical_steady/csv/
+│ └── thermomechanical_steady_nodes.csv
+└── ultrasonic/
+└── receiver_signal.csv
+E:pinn_data/wumu/
+├── case_0000_T0300p000K/
+├── case_0001_T0301p202K/
+└── case_0999_T1500p000K/
+温度场 CSV 的核心字段为：
+node_id,x,y,T,thermal_material_id,dup_target_surface
+其中温度单位为 K，坐标单位为 m。相同坐标处的接触界面两侧节点通过节点编号、
+材料编号和界面身份分别保存。
+第 3 页
+4.2 建库输出
+完成数据配对、固定节点采样和数据划分后，数据集目录包含：
+manifest.json
+train_manifest.json
+validation_manifest.json
+test_manifest.json
+split_config.json
+mesh_audit.json
+sampling_index.npz
+waveforms/*.npy
+temperature_fields/*.npz
+多材料数据库通过 material_collection.json 记录每种材料的数据清单、划分比例和
+模型路由信息。逐材料配置使三类材料可根据任务需要形成训练、验证和测试组合；独立
+实验波形可作为指定材料的测试来源。
+5. Windows 图形化操作
+启动图形界面：
+python -m ai_model.window
+界面依次提供：
+• 路径设置；
+• 构建数据库；
+• 训练模型；
+• 预测对比；
+• 校验数据；
+• 增量训练；
+• 一键演示；
+• 项目清理。
+我们推荐按照如下流程推进项目：
+• 环境检查 → 路径设置 → 构建数据库 → 数据校验 → 模型训练 → 温度场预测
+• → 结果查看 → 增量训练。
+5.1 路径设置
+设置输入根目录、输出根目录、Python 解释器和任务工作目录。表单参数可保存为
+用户配置，供后续任务复用。
+5.2 构建数据库
+单材料任务选择材料 case 文件夹；多材料任务选择三类材料文件夹的共同上级目录，
+并在材料表中分别设置训练、验证和测试比例。
+系统自动完成：
+• case 发现与波形—温度场配对；
+第 4 页
+• 波形列和时间列读取；
+• 温度单位与坐标单位统一；
+• 约 23 万节点到 10,000 固定节点的确定性采样；
+• 边界和接触界面节点保留；
+• 数据划分及训练集统计量生成；
+• 数据格式、网格和配对完整性检查。
+对于独立实验波形，在“外部测试导入”中选择 post0 CSV 目录，设置挂接材料、数
+据集名称、时间列和波形列。系统将实验波形登记到指定材料的测试清单，用于模型预测
+和测点对比。
+5.3 训练模型
+在训练页选择数据集目录或 material_collection.json，设置任务维度、稳瞬态模式、
+材料规则名称、设备、训练轮数和早停参数。
+系统采用分材料模型与材料路由机制，根据材料类型调用对应的完整温度场重构模型。
+训练时为每种材料生成独立 checkpoint 和材料路由文件，训练轮数对每种材料分别生效。
+验证清单用于每轮评估和最佳模型选择，训练完成后模型按规则登记，供预测与增量训练
+调用。程序保留混合清单组织方式，供既有运行配置使用。
+5.4 预测对比
+预测页可选择单材料测试清单、多材料集合或独立实验测试清单。
+• 系统读取材料集合和材料路由，根据样本材料类型自动选择对应的完整 checkpoint；
+• 二维输出生成完整 10,000 节点温度场；
+• 一维输出从二维场提取归一化 x=0.5 中心线；
+• 绘图功能生成真实值、预测值和误差对比图；
+• 性能评估功能记录单场耗时、吞吐率和显存信息。
+5.5 校验数据
+校验模块综合检查数据规模、数据格式、材料信息、温度范围、网格一致性、采样索
+引、数据划分和预测指标，并输出完整核查报告。
+5.6 增量训练与迁移学习
+增量训练页加载基础 checkpoint 和新增数据清单，可配置训练轮数、设备和分支权
+重。系统基于参数冻结与部分权重更新的迁移学习，为新增材料和新增数据的模型适配提
+供技术基础。新模型与基础任务建立关联，训练报告写入独立时间目录，并登记到模型规
+则库。
+第 5 页
+5.7 一键演示
+一键演示按照界面配置连续执行建库、划分、训练和校验，用于展示系统完整业务链
+路。多材料模式按逐材料配置完成数据组织与模型训练。
+5.8 项目清理
+项目清理页按任务规则展示模型、训练报告和预测结果，执行前提供路径核对和二次
+确认，便于维护规范的交付目录。
+6. 命令行操作
+图形界面覆盖主要业务流程；命令行适合批量任务、服务器运行和自动化执行。
+6.1 单材料建库
+python -m ai_model build-db `
+--data-root database `
+--result-root result `
+--skip-simulation `
+--experiment-dir E:/pinn_data/wumu `
+--experiment-material wumu `
+--experiment-limit 1000 `
+--waveform-crop-length 1097 `
+--split-dataset `
+--split-test-ratio 0.2 `
+--split-validation-ratio 0.1 `
+--split-seed 42
+6.2 多材料建库
+python -m ai_model build-db `
+--data-root database `
+--result-root result `
+--skip-simulation `
+--experiment-dir E:/pinn_data `
+--experiment-material multi_material_v1 `
+--multi-material-input `
+--material-split wumu=0.7,0.1,0.2 `
+--material-split metal=0.7,0.1,0.2 `
+--material-split silicon=0.7,0.1,0.2 `
+--split-dataset
+6.3 导入独立实验测试波形
+python -m ai_model build-db `
+--data-root database `
+--result-root result `
+--skip-simulation `
+--experiment-dir E:/pinn_data `
+--experiment-material multi_material_v1 `
+--multi-material-input `
+--material-split wumu=0.8,0.2,0 `
+--material-split metal=0.7,0.2,0.1 `
+--material-split silicon=0.7,0.2,0.1 `
+--external-test-dir E:/raw/wumu_exp_post0 `
+--external-test-material wumu `
+--external-test-dataset-name wumu_exp `
+--external-test-signal-column amplitude_filtered_residual `
+--external-test-time-column time_s `
+--external-test-time-min-s 0 `
+--split-dataset
+6.4 模型训练
+python -m ai_model train `
+--data-root database `
+第 6 页
+--result-root result `
+--manifest ai_model/database/data_process/multi_material_v1_multi_material_temperature_field `
+--train-name material_checkpoints_v1 `
+--checkpoint-name ai_model.pt `
+--rule-dimension two `
+--rule-mode steady `
+--rule-material multi_material `
+--device cuda `
+--early-stopping-patience 10 `
+--epochs 500 `
+--separate-materials
+该命令为集合中的每种材料生成独立 checkpoint，并生成供预测阶段使用的材料路由
+文件。
+6.5 温度场预测
+分材料模型与材料路由预测：
+python -m ai_model predict `
+--data-root database `
+--result-root result `
+--manifest ai_model/database/data_process/multi_material_v1_multi_material_temperature_field/material_
+collection.json `
+--material-router ai_model/result/train/checkpoint/material_checkpoints_v1/ai_model__material_router.j
+son `
+--predict-name routed_material_prediction `
+--plots `
+--prediction-dimension one `
+--benchmark
+--prediction-dimension two 输出完整二维节点场；--prediction-dimension one
+输出二维场的固定中心线结果。
+6.6 数据校验
+python -m ai_model validate `
+--data-root database `
+--result-root result `
+--manifest ai_model/database/data_process/multi_material_v1_multi_material_temperature_field/material_
+collection.json
+validate 入口会识别 material_collection.json 的集合类型，逐材料解析对应的 com
+bined manifest，并汇总记录数、材料数、温度范围和数据校验结果。
+6.7 在线增量训练
+python -m ai_model online-update `
+--data-root database `
+--result-root result `
+--manifest ai_model/database/data_process/wumu_case_temperature_field/train_manifest.json `
+--checkpoint ai_model/result/train/checkpoint/wumu_temperature_v1/ai_model.pt `
+--output-name wumu_incremental_v2.pt `
+--rule-dimension two `
+--rule-mode steady `
+--rule-material wumu `
+--device cuda `
+--epochs 20
+6.8 一键演示
+python -m ai_model demo `
+--data-root database `
+--result-root result `
+--train-name point_demo `
+--device cpu `
+--epochs 20 `
+--experiment-limit 20 `
+--experiment-material wumu `
+第 7 页
+--waveform-crop-length 1097 `
+--split-dataset `
+--split-test-ratio 0.2 `
+--split-validation-ratio 0.1 `
+--split-seed 42 `
+--rule-dimension two `
+--rule-mode steady `
+--rule-material wumu
+查看命令帮助：
+python -m ai_model build-db --help
+python -m ai_model train --help
+python -m ai_model predict --help
+python -m ai_model validate --help
+python -m ai_model online-update --help
+python -m ai_model demo --help
+7. 波形预处理
+训练、预测、增量训练和一键演示共用以下预处理参数：
+--preprocess clip,smooth,detrend,robust_norm
+--clip-quantile 1.0
+--smooth-window 11
+处理步骤包括：
+• clip：按分位数处理脉冲峰值；
+• smooth：采用滑动窗口平滑波形；
+• detrend：消除基线趋势；
+• robust_norm：采用稳健统计量完成幅值归一化。
+波形统计参数随模型保存，并在预测和增量训练阶段保持一致。
+8. 模型与结果管理
+模型文件记录模型类型、固定节点数量、采样指纹、温度统计量、波形预处理参数、
+CNN/LSTM 分支权重和任务规则。系统采用版本化 checkpoint 管理机制，根据模型元数据
+自动匹配对应的数据格式和推理流程，并在训练、预测和增量训练入口执行一致性检查。
+预测目录主要包含：
+• predictions.csv：节点编号、坐标、预测温度、参考温度、材料和界面身份；
+• predictions.npz：完整温度场数组；
+• metrics.json：全场、边界、界面、材料分区、高温区的 MAE/RMSE/最大绝对误差，以及样本数、节
+点数、模型与 checkpoint 信息、评估耗时、参数量和内存信息；选择一维结果时增加中心线指标，
+启用独立测速时增加 benchmark 字段；
+• metadata.json：模型、数据、采样、单位及运行环境信息；
+• point_field_compare.png：启用绘图并选择二维结果时生成的温度场对比图；
+• axis_predictions.csv/.npz：选择一维结果时生成的中心线预测结果；
+• axis_compare.png：选择一维结果并启用绘图时生成的真实值、预测值和误差对比图。
+五个代表性测点的验收结果形成独立评价记录，并与 metrics.json、预测结果及运行
+日志共同归档。
+第 8 页
+训练目录保存 checkpoint、损失曲线、训练过程记录、最佳轮次和任务统计。数据清
+单、模型元数据、预测日志及结果文件共同构成全过程追溯链路。
+9. 误差评价方法
+合同验收主指标为五个代表性测点平均温度的相对误差：
+? ref,avg = 1
+5
+?=1
+5
+? ref,? 
+? AI,avg = 1
+5
+?=1
+5
+? AI,? 
+? ? =
+? AI,avg − ? ref,avg
+max ? ref,avg , ? × 100%
+其中，? 为防止参考平均温度接近零时出现零分母的正数。合同验收只使用上述“先计算五点平均温度，再
+计算相对误差”的公式。
+MAE、RMSE、最大绝对误差、中心化 RMSE、空间相关系数、边界误差、界面误差、
+材料分区误差和高温区误差用于分析温度场空间分布质量和定位局部误差。
+效率评价采用：
+Speedup = ?traditional
+?AI
+AI 方法与传统方法统一以完成一个完整温度场反演任务所需的平均时间作为统计口
+径。在满足温度反演精度要求的基础上，计算传统方法平均耗时与 AI 单场平均推理耗时
+之比。
+10. 常见操作提示
+10.1 Python 包入口
+在 ai_model 的上一级目录执行：
+cd D:\Desktop\code
+python -m ai_model --help
+10.2 GPU 环境检查
+python -c "import torch; print(torch.cuda.is_available(), torch.version.cuda)"
+10.3 Windows 中文输出
+图形界面自动采用 UTF-8。命令行任务可设置：
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
+10.4 模型与数据一致性
+预测和增量训练时，系统根据 checkpoint 元数据检查模型类型、节点数量、采样索
+第 9 页
+引、波形长度和温度统计量。选择同一建库任务生成的数据清单和模型，即可保持完整的
+数据处理与物理节点对应关系。
+11. 系统能力与质量保证
+本系统形成三材料温度—声学数据库、CNN–LSTM–BP 温度场重构模型、PINN 物理
+约束融合方法及配套的软件操作和结果分析能力，支持：
+• 一维、二维、稳态和瞬态温度场重构；
+• 10000 个固定物理节点完整二维温度场；
+• 二维温度场固定中心线的一维结果；
+• 在线增量训练，以及基于参数冻结与部分权重更新的迁移学习；
+• GPU 快速推理和效率统计；
+• Windows 图形化界面；
+• Python 人工智能模块与 Fortran 数值计算模块协同；
+• 多材料模型路由和版本化 checkpoint 管理；
+• 数据、模型、配置、日志和结果全过程追溯；
+• 自动化测试、数据质量检查和版本一致性验证。
+系统通过标准化数据格式、确定性物理节点采样、模型元数据管理和完整结果导出，
+为温度场重构任务提供统一、稳定、可追溯的技术支撑。
