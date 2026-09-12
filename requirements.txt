@@ -3,6 +3,8 @@
 # 说明:
 # - torch 若需 CUDA 请从 https://pytorch.org 按环境选择对应 wheel。
 # - Tkinter 属于 Python 标准库，不在本文件单独声明。
+# - Fortran DLL 不由 pip 安装；构建与验证见 fortran/README.md。
+# - 开发回归另需 pytest，GUI 截图另需 Windows pywin32。
 # - 规则映射（database/rule/*.csv）仅使用标准库 csv/pathlib，无新增第三方依赖。
 
 torch>=2.0.0

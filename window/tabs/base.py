@@ -141,6 +141,17 @@ class BaseCommandTab(ttk.Frame):
     def validate_form(self) -> None:
         return None
 
+    def validate_settings_form(self) -> None:
+        """Saved defaults need concrete numbers, even for optional run controls."""
+        pending = list(self.scroll.inner.winfo_children())
+        while pending:
+            widget = pending.pop(0)
+            if isinstance(widget, LabeledNumber) and widget.get() is None:
+                raise widget.invalid(
+                    f"{widget.label.cget('text')}：保存默认值前请补全数字。"
+                )
+            pending.extend(widget.winfo_children())
+
     def to_settings_section(self) -> dict[str, Any] | None:
         """子类可重写：返回当前表单状态。返回 None 表示不参与持久化。"""
 
@@ -608,7 +619,7 @@ class BaseCommandTab(ttk.Frame):
         try:
             self.validate_form()
             return self.compose_command()
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             self.show_validation_error(exc)
         except Exception as exc:  # pragma: no cover
             messagebox.showerror("内部错误", str(exc), parent=self.winfo_toplevel())

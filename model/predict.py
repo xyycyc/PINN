@@ -1052,7 +1052,7 @@ def _predict_point_field(
 ) -> dict[str, Any]:
     """Predict fixed physical nodes and preserve the raw node table."""
     device = _default_device(cfg)
-    bundle = torch.load(checkpoint_path, map_location=device)
+    bundle = torch.load(checkpoint_path, map_location=device, weights_only=False)
     if not isinstance(bundle, dict) or bundle.get("model_kind") != "direct_point_field":
         raise ValueError("固定节点 manifest 需要 model_kind='direct_point_field' 的版本化 checkpoint")
     checkpoint_version = int(bundle.get("checkpoint_version", 0))
@@ -1311,7 +1311,7 @@ def predict_collection_with_checkpoint(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     collection = load_material_collection(collection_path)
-    bundle = torch.load(checkpoint_path, map_location="cpu")
+    bundle = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     if not isinstance(bundle, dict) or bundle.get("model_kind") != "direct_point_field":
         raise ValueError("多材料集合混合预测需要 direct_point_field checkpoint")
     checkpoint_normalization = dict(bundle.get("normalization", {}))

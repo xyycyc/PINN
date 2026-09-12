@@ -745,7 +745,7 @@ class TemperatureContractTests(unittest.TestCase):
                 checkpoint_name="validated.pt",
                 train_name="validated",
             )
-            validation_bundle = torch.load(validation_checkpoint, map_location="cpu")
+            validation_bundle = torch.load(validation_checkpoint, map_location="cpu", weights_only=False)
             self.assertEqual(len(validation_bundle["history"]), 2)
             self.assertTrue(all("validation_loss" in row for row in validation_bundle["history"]))
             self.assertIsNotNone(validation_bundle["training_summary"]["best_epoch"])
@@ -886,6 +886,7 @@ class TemperatureContractTests(unittest.TestCase):
                 bundle = torch.load(
                     router.parent / checkpoint_spec["checkpoint"],
                     map_location="cpu",
+                    weights_only=False,
                 )
                 self.assertEqual(bundle["checkpoint_version"], POINT_FIELD_CHECKPOINT_VERSION)
                 self.assertEqual(bundle["full_point_count"], 4)

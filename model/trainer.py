@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import copy
 from collections import defaultdict
@@ -118,11 +119,18 @@ def _point_field_objective(
     }
 
 
+def _validate_finite_training_values(config: AIModelConfig) -> None:
+    for key in ("learning_rate", "physics_residual_weight", "fixed_weight_cnn", "fixed_weight_lstm"):
+        if not math.isfinite(float(getattr(config, key))):
+            raise ValueError(f"{key} must be finite")
+
+
 class ReconstructionTrainer:
     """Train one shared model or a router-managed set of material models."""
 
     def __init__(self, config: AIModelConfig | None = None):
         self.config = config or AIModelConfig()
+        _validate_finite_training_values(self.config)
         if int(self.config.epochs) <= 0:
             raise ValueError("epochs must be > 0")
         if int(self.config.early_stopping_patience) <= 0:
@@ -830,6 +838,10 @@ def resolve_incremental_artifacts(
     checkpoint_dir = config.train_checkpoint_root / base_run_name
     checkpoint_path = checkpoint_dir / checkpoint_name
     report_dir = config.train_report_root / base_run_name / "Incremental" / stamp
+    if checkpoint_path.resolve() == base_ckpt:
+        raise ValueError("增量训练不能覆盖基础 checkpoint，请填写新的输出文件名。")
+    if checkpoint_path.exists() or report_dir.exists():
+        raise FileExistsError(f"增量输出已存在，请使用新的文件名/时间戳：{checkpoint_path}；{report_dir}")
     return checkpoint_path, report_dir, stamp
 
 
@@ -838,6 +850,7 @@ class OnlineUpdater:
 
     def __init__(self, config: AIModelConfig | None = None):
         self.config = config or AIModelConfig()
+        _validate_finite_training_values(self.config)
         if int(self.config.online_epochs) <= 0:
             raise ValueError("online_epochs must be > 0")
         if self.config.training_mode not in {"normal", "residual_pinn"}:
@@ -868,7 +881,7 @@ class OnlineUpdater:
         dataset = AITemperatureDataset(manifest_path, config=self.config)
         if len(dataset) == 0:
             raise ValueError(f"增量训练 manifest 没有记录: {manifest_path}")
-        state = torch.load(base_checkpoint, map_location=self.device)
+        state = torch.load(base_checkpoint, map_location=self.device, weights_only=False)
         if dataset.is_point_field:
             return self._update_point_field(dataset, state, base_checkpoint, output_path, report_dir, stamp)
         loader = DataLoader(dataset, batch_size=self.config.batch_size, shuffle=True)

@@ -22,6 +22,16 @@ from .preprocess_cache import load_or_apply_preprocessed_waveform
 from .split_policy import SPLIT_EXPERIMENT_POLICIES
 
 
+def _read_manifest(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"manifest 顶层必须是 JSON 对象: {path}")
+    records = payload.get("records")
+    if not isinstance(records, list) or any(not isinstance(item, dict) for item in records):
+        raise ValueError(f"manifest records 必须是由记录对象组成的列表: {path}")
+    return payload
+
+
 def latest_split_manifest(data_root: str | Path, kind: str) -> Path | None:
     """Return the newest existing manifest referenced by a split config."""
 
@@ -48,6 +58,8 @@ def latest_split_manifest(data_root: str | Path, kind: str) -> Path | None:
     for _mtime_ns, config_path in dated_candidates:
         try:
             payload = json.loads(config_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                continue
             manifests = payload.get("manifests", {})
             raw = str(manifests.get(kind, "") if isinstance(manifests, dict) else "").strip()
             if not raw:
@@ -57,6 +69,8 @@ def latest_split_manifest(data_root: str | Path, kind: str) -> Path | None:
                 manifest = config_path.parent / manifest
             if manifest.is_file():
                 manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
+                if not isinstance(manifest_payload, dict):
+                    continue
                 records = manifest_payload.get("records", [])
                 if not isinstance(records, list) or not records:
                     continue
@@ -163,7 +177,7 @@ def split_manifest_file(
 ) -> tuple[Path, Path, dict[str, Any]]:
     """Split a legacy manifest and persist reproducible train/test artifacts."""
     manifest_path = Path(manifest_path)
-    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload = _read_manifest(manifest_path)
     records = payload.get("records", [])
     if not isinstance(records, list):
         raise ValueError("manifest records 字段必须是列表")
@@ -307,7 +321,7 @@ def write_case_split_files(manifest_path: str | Path, *, seed: int = 42,
         label="训练/验证/测试 manifest 文件名",
         reserved=(manifest_path.name, "split_config.json"),
     )
-    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload = _read_manifest(manifest_path)
     splits, report = split_case_records(payload.get("records", []), seed=seed,
                                          train_ratio=train_ratio, validation_ratio=validation_ratio)
     train_values: list[np.ndarray] = []
@@ -366,7 +380,7 @@ class AITemperatureDataset(Dataset):
 
     def __init__(self, manifest_path: str | Path, config: AIModelConfig | None = None):
         manifest_path = Path(manifest_path)
-        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        data = _read_manifest(manifest_path)
         self.config = config or AIModelConfig()
         self.root = manifest_path.parent
         self.records = data["records"]
@@ -385,8 +399,9 @@ class AITemperatureDataset(Dataset):
         if self.is_point_field:
             if self.normalization.get("fit_split") != "train":
                 raise ValueError("固定节点 manifest 必须携带仅由训练集拟合的 normalization")
-            if self.temperature_std_k <= 0:
-                raise ValueError("固定节点温度标准差必须大于 0")
+            if (not np.isfinite(self.temperature_mean_k)
+                    or not np.isfinite(self.temperature_std_k) or self.temperature_std_k <= 0):
+                raise ValueError("固定节点温度均值和标准差必须有限，且标准差必须大于 0")
             sampling_path = self.root / str(data["sampling_index"])
             with np.load(sampling_path, allow_pickle=False) as sampling:
                 self.point_count = int(len(sampling["node_ids"]))

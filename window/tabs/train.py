@@ -82,6 +82,13 @@ class TrainTab(BaseCommandTab):
             self.manifest.set(
                 auto_manifest or str(self._resolve_data_root_path())
             )
+        self.allow_no_validation = LabeledCheck(
+            section,
+            "验证集要求",
+            "允许无验证集训练：仅在单数据集缺少验证清单时生效，不执行验证早停；已有验证集仍会使用。",
+            default=bool(self._cfg_value("allow_no_validation", False)),
+        )
+        self.allow_no_validation.pack(fill="x", padx=PADX, pady=PADY)
         self.separate_materials = LabeledCheck(
             section,
             "多材料训练策略",
@@ -210,8 +217,11 @@ class TrainTab(BaseCommandTab):
             raise self.manifest.invalid(f"训练数据集路径不存在: {path}")
         train_manifest, validation_manifest = resolve_training_manifest_pair(path)
         model_kind = manifest_model_kind(train_manifest, repo_root=self.repo_root)
-        if model_kind != "material_collection" and validation_manifest is None:
-            raise ValueError(f"训练数据集文件夹缺少 validation manifest: {path}")
+        if (model_kind != "material_collection" and validation_manifest is None
+                and not self.allow_no_validation.get()):
+            raise self.manifest.invalid(
+                f"缺少验证清单: {path}。请选择完整数据集；确需无验证集训练时，请明确勾选允许开关。"
+            )
         if self.separate_materials.get() and model_kind != "material_collection":
             raise ValueError("分别训练需要选择多材料建库生成的 material_collection.json。")
         epochs = self.runtime["epochs"].get()  # type: ignore[union-attr]
@@ -238,6 +248,7 @@ class TrainTab(BaseCommandTab):
         data: dict[str, Any] = {
             "manifest": self.manifest.get(),
             "auto_manifest": bool(self.auto_manifest.get()),
+            "allow_no_validation": self.allow_no_validation.get(),
             "train_name": self.train_name.get(),
             "checkpoint_name": self.checkpoint_name.get(),
             "separate_materials": bool(self.separate_materials.get()),

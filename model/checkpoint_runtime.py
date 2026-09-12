@@ -81,13 +81,14 @@ def resolve_checkpoint_config_dict(
     current = start
     while current not in visited:
         visited.add(current)
-        bundle = torch.load(current, map_location="cpu")
+        bundle = torch.load(current, map_location="cpu", weights_only=False)
         config_dict = bundle.get("config") if isinstance(bundle, dict) else None
         if isinstance(config_dict, dict):
             return dict(config_dict)
         base = bundle.get("base_checkpoint") if isinstance(bundle, dict) else None
         if base:
-            current = Path(str(base)).resolve()
+            base_path = Path(str(base))
+            current = (base_path if base_path.is_absolute() else current.parent / base_path).resolve()
             if current.exists():
                 continue
         break
@@ -226,7 +227,7 @@ def load_model_state_strict(
 ) -> dict[str, Any]:
     """加载权重；默认 strict=True，结构不一致时立即报错。"""
     checkpoint_path = Path(checkpoint_path)
-    bundle = torch.load(checkpoint_path, map_location=map_location or "cpu")
+    bundle = torch.load(checkpoint_path, map_location=map_location or "cpu", weights_only=False)
     if not isinstance(bundle, dict) or "model_state" not in bundle:
         raise ValueError(f"无效的 checkpoint 格式: {checkpoint_path}")
     model.load_state_dict(bundle["model_state"], strict=True)

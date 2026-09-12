@@ -58,6 +58,16 @@ class ValidateTab(BaseCommandTab):
                 auto_manifest or str(self._resolve_data_root_path() / "combined_manifest.json")
             )
 
+    def validate_form(self) -> None:
+        if self.auto_manifest.get():
+            return
+        raw = self.manifest.get()
+        if not raw:
+            raise self.manifest.invalid("手动模式下请选择待校验清单。")
+        path = self.manifest.resolve(raw)
+        if not path.is_file():
+            raise self.manifest.invalid(f"待校验清单不存在或不是文件: {path}")
+
     def compose_command(self) -> list[str]:
         args: list[str] = ["validate"]
         args.extend(self.shared_io_root_args())

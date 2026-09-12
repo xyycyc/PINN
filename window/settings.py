@@ -9,8 +9,8 @@
 --------
 1. ``DEFAULT_SETTINGS`` 是内置默认 schema，作为兜底——即使
    ``settings.json`` 缺失或字段被改坏，GUI 仍能正常启动；
-2. ``load_settings`` 做深度合并：用户文件里有的覆盖默认，
-   缺的用默认补齐，避免“漏配置就崩”的情况；
+2. ``load_settings`` 深度合并并校验已知字段类型：有效值保留，
+   缺失或损坏字段使用内置默认值，恢复事项交由 GUI 明确提示；
 3. ``Settings.save`` 把当前 dict 以 UTF-8 + 2 空格缩进写回 JSON，
    方便人手工编辑；
 4. 每个 section 的 key 与对应 Tab 的控件一一对应，键名建议保持
@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 import tempfile
 from pathlib import Path
@@ -32,8 +33,8 @@ SETTINGS_PATH = Path(__file__).resolve().parent / SETTINGS_FILE_NAME
 
 
 # ---------------------------------------------------------------------------
-# 内置默认 schema：与 ai_model/cli.py、ai_model/config/、ai_model/data_process/、ai_model/batch/
-# 中的默认值一一对齐；用户可以修改 settings.json 来改变这些默认。
+# 内置 GUI 默认 schema：主流程训练默认 20 轮；直接使用 AIModelConfig
+# 的 API 和部分隐藏批量页面保留 5000 轮。修改 settings.json 可设置下次启动值。
 # ---------------------------------------------------------------------------
 DEFAULT_SETTINGS: dict[str, Any] = {
     "$schema_version": 1,
@@ -101,6 +102,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "rule_material": "metal_matrix",
         "epochs": 20,
         "early_stopping_patience": 10,
+        "allow_no_validation": False,
     },
     "predict": {
         "data_root": "database",
@@ -246,12 +248,59 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return result
 
 
+def _normalize_settings(data: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Recover invalid known fields without dropping valid or extension values."""
+    issues: list[str] = []
+
+    def visit(default: Any, value: Any, key: str) -> Any:
+        if isinstance(default, dict):
+            # Material split presets also accept the historical list notation.
+            if not default and isinstance(value, (dict, list)):
+                return copy.deepcopy(value)
+            if isinstance(value, dict):
+                result = copy.deepcopy(value)
+                for name, fallback in default.items():
+                    result[name] = (
+                        visit(fallback, value[name], f"{key}.{name}".lstrip("."))
+                        if name in value
+                        else copy.deepcopy(fallback)
+                    )
+                return result
+        elif isinstance(default, bool):
+            if isinstance(value, bool):
+                return value
+        elif isinstance(default, (int, float)):
+            try:
+                if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+                    raise ValueError("not a number")
+                number = float(value)
+                if not math.isfinite(number):
+                    raise ValueError("non-finite number")
+                if isinstance(default, int):
+                    if number != int(number):
+                        raise ValueError("not an integer")
+                    return int(value)
+                return number
+            except (TypeError, ValueError, OverflowError):
+                pass
+        elif isinstance(value, type(default)):
+            return copy.deepcopy(value)
+        issues.append(f"{key} 的值 {value!r} 无效，已恢复内置默认值 {default!r}。")
+        return copy.deepcopy(default)
+
+    return visit(DEFAULT_SETTINGS, data, ""), issues
+
+
 class Settings:
     """对 ``settings.json`` 的轻量包装，提供 section/key 取值与回写。"""
 
-    def __init__(self, data: dict[str, Any] | None = None, path: Path | None = None) -> None:
+    def __init__(
+        self, data: dict[str, Any] | None = None, path: Path | None = None
+    ) -> None:
         self._path = Path(path) if path is not None else SETTINGS_PATH
-        self._data = copy.deepcopy(DEFAULT_SETTINGS if data is None else data)
+        self._data, self._recovery_warnings = _normalize_settings(
+            DEFAULT_SETTINGS if data is None else data
+        )
 
     @property
     def path(self) -> Path:
@@ -259,7 +308,11 @@ class Settings:
 
     @property
     def data(self) -> dict[str, Any]:
-        return self._data
+        return copy.deepcopy(self._data)
+
+    @property
+    def recovery_warnings(self) -> tuple[str, ...]:
+        return tuple(self._recovery_warnings)
 
     # ---- 取值 --------------------------------------------------------------
     def section(self, name: str) -> dict[str, Any]:
@@ -290,21 +343,35 @@ class Settings:
     # ---- IO ----------------------------------------------------------------
     def save(self, path: Path | None = None) -> Path:
         target = Path(path) if path is not None else self._path
-        _write_settings(target, self._data)
+        normalized, issues = _normalize_settings(self._data)
+        if issues:
+            raise ValueError(
+                "配置未保存，请修正无效字段：\n"
+                + "\n".join(
+                    issue.replace("已恢复内置默认值", "内置默认值为")
+                    for issue in issues
+                )
+            )
+        _write_settings(target, normalized)
+        self._data = normalized
+        self._recovery_warnings = []
         return target
 
     def save_sections(self, sections: dict[str, dict[str, Any]]) -> Path:
         """Commit collected forms only after the entire file is safely saved."""
-        candidate = Settings(self._data, path=self._path)
+        candidate = Settings(path=self._path)
+        candidate._data = self.data
         for name, payload in sections.items():
             candidate.update_section(name, payload)
         target = candidate.save()
         self._data = candidate.data
+        self._recovery_warnings = []
         return target
 
     def reload(self) -> None:
         loaded = load_settings(self._path)
         self._data = loaded.data
+        self._recovery_warnings = list(loaded.recovery_warnings)
 
 
 def load_settings(path: Path | None = None) -> Settings:
@@ -319,8 +386,9 @@ def load_settings(path: Path | None = None) -> Settings:
             raise ValueError("settings.json 顶层必须是 JSON 对象")
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         # 解析失败时回退到默认，避免 GUI 因为坏配置启动失败。
-        print(f"[settings] 解析失败，使用内置默认值: {exc}")
-        return Settings(copy.deepcopy(DEFAULT_SETTINGS), path=target)
+        settings = Settings(path=target)
+        settings._recovery_warnings.append(f"配置文件解析失败，已使用内置默认值：{exc}")
+        return settings
     merged = _deep_merge(copy.deepcopy(DEFAULT_SETTINGS), loaded)
     return Settings(merged, path=target)
 
@@ -336,13 +404,17 @@ def write_default_settings_file(path: Path | None = None, force: bool = False) -
 
 def _write_settings(target: Path, data: dict[str, Any]) -> None:
     """Replace a complete UTF-8 file; a failed save leaves the previous file intact."""
-    content = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    content = json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=target.parent,
-            prefix=f".{target.name}.", suffix=".tmp", delete=False,
+            mode="w",
+            encoding="utf-8",
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            delete=False,
         ) as stream:
             temporary = Path(stream.name)
             stream.write(content)

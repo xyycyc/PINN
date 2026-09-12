@@ -63,7 +63,8 @@
     "rule_mode": "steady",
     "rule_material": "metal_matrix",
     "epochs": 20,
-    "early_stopping_patience": 10
+    "early_stopping_patience": 10,
+    "allow_no_validation": false
   },
   "predict": {
     "data_root": "database",

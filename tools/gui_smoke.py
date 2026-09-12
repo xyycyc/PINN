@@ -192,6 +192,41 @@ def exercise(root: tk.Tk, app: AiModelApp, output: Path, screenshots: bool) -> d
         "invalid numeric input focuses and scrolls to field; failed Save All preserves file"
     )
 
+    train.runtime["epochs"].var.set("")
+    validate.master.select(validate)
+    app.save_settings_from_forms()
+    root.update()
+    assert train.master.select() == str(train)
+    assert "补全数字" in train._feedback.get()
+    assert app.settings.path.read_bytes() == before
+    train.runtime["epochs"].set(20)
+    app.save_settings_from_forms()
+    root.update()
+    assert not train._feedback.get()
+    assert json.loads(app.settings.path.read_text(encoding="utf-8"))["train"]["epochs"] == 20
+    scenarios.append("blank numeric save is blocked; corrected save clears stale errors")
+
+    validation_path = Path(train.manifest.get()) / "validation_manifest.json"
+    validation_text = validation_path.read_text(encoding="utf-8")
+    validation_path.unlink()
+    try:
+        assert not train.allow_no_validation.get()
+        assert train._prepare_command() is None
+        train.allow_no_validation.set(True)
+        assert train._prepare_command() is not None
+        assert train.to_settings_section()["allow_no_validation"] is True
+    finally:
+        train.allow_no_validation.set(False)
+        validation_path.write_text(validation_text, encoding="utf-8")
+    scenarios.append("training without validation requires explicit GUI opt-in")
+
+    saved_manifest = validate.manifest.get()
+    validate.manifest.set("")
+    assert validate._prepare_command() is None
+    assert "手动模式" in validate._feedback.get()
+    validate.manifest.set(saved_manifest)
+    scenarios.append("manual validation never silently chooses another manifest when blank")
+
     train._preview_button.invoke()
     root.update()
     dialogs = [
@@ -277,6 +312,23 @@ def exercise(root: tk.Tk, app: AiModelApp, output: Path, screenshots: bool) -> d
     assert selected.master.select() == str(selected)
     assert "PRESERVE_ON_RELOAD" in app.log_text.get("1.0", "end")
     snapshot("reloaded")
+    saved_payload = json.loads(app.settings.path.read_text(encoding="utf-8"))
+    saved_payload["train"]["epochs"] = None
+    app.settings.path.write_text(json.dumps(saved_payload), encoding="utf-8")
+    bad_contents = app.settings.path.read_bytes()
+    with patch("ai_model.window.app.messagebox.askyesno", return_value=True):
+        app.reload_settings()
+    root.update()
+    recovered_train = next(tab for tab in app._tabs if tab.settings_section == "train")
+    assert recovered_train.runtime["epochs"].get() == 20
+    assert app._log_visible and "train.epochs" in app.log_text.get("1.0", "end")
+    assert "已恢复" in app._status_var.get()
+    assert app.settings.path.read_bytes() == bad_contents
+    snapshot("settings-recovered")
+    app.save_settings_from_forms()
+    assert json.loads(app.settings.path.read_text(encoding="utf-8"))["train"]["epochs"] == 20
+    scenarios.append("legacy null setting reload recovers with visible warning and explicit save")
+
     (output / "session.log").write_text(
         app.log_text.get("1.0", "end"), encoding="utf-8"
     )

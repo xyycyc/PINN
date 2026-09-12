@@ -90,9 +90,21 @@ class AiModelApp:
         self._log_line(f"[app] 子进程默认工作目录: {self._resolve_launch_root()}")
         self._log_line(f"[app] 配置文件: {self.settings.path}")
         self._log_line("[app] 选中功能页后可预览命令，或点击右下角按钮开始任务。")
+        self._show_settings_recovery()
         self._poll_log_queue()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _show_settings_recovery(self) -> None:
+        warnings = self.settings.recovery_warnings
+        if not warnings:
+            return
+        for warning in warnings:
+            self._log_line(f"[settings] {warning}")
+        self._log_line("[settings] 原配置文件尚未改写；检查表单后可保存修复后的默认值。")
+        if not self._log_visible:
+            self.toggle_log()
+        self._set_status(f"配置中 {len(warnings)} 处无效值已恢复，详情见日志。")
 
     def _resolve_launch_root(self) -> Path:
         """Use the current form immediately; saving controls the next session."""
@@ -393,6 +405,7 @@ class AiModelApp:
         self._rebuild_tabs()
         self._log_line(f"[settings] 已从 {self.settings.path} 重新加载配置。")
         self._set_status("配置已重载")
+        self._show_settings_recovery()
 
     def save_settings_from_forms(self) -> None:
         """Collect every form before committing either memory or the file."""
@@ -401,6 +414,8 @@ class AiModelApp:
             for tab in self._tabs:
                 section = getattr(tab, "settings_section", "")
                 if section and hasattr(tab, "to_settings_section"):
+                    if hasattr(tab, "validate_settings_form"):
+                        tab.validate_settings_form()
                     payload = tab.to_settings_section()
                     if payload:
                         sections[section] = payload
@@ -413,6 +428,9 @@ class AiModelApp:
         except Exception as exc:
             messagebox.showerror("保存失败", str(exc))
             return
+        for tab in self._tabs:
+            if hasattr(tab, "clear_validation_error"):
+                tab.clear_validation_error()
         self._log_line(f"[settings] 当前表单已写回 {target}")
         self._set_status(f"配置已保存: {target}")
 

@@ -9,3 +9,12 @@
 - 预测保留 `predictions.csv` 原始节点表；每行包含 `sample_id,node_id,x_m,y_m,temperature_k,target_temperature_k,constituent_material_id,interface_side`，展示图不会覆盖该表。
 - 固定节点二维 checkpoint 可选择 `two` 或 `one` 输出。`one` 不改变模型结构，而是在完整二维节点预测后提取归一化 `x=0.5` 的最近采样轴，并额外写出 `axis_predictions.csv/.npz` 和对比图。
 - 多材料集合允许材料内部测试比例为 0。post0 外部波形通过 inference-only manifest 挂接到指定材料的 `test` 路由，不进入训练/验证；无真实空间标签时不能把代理场指标解释为真实二维误差。
+
+
+## 交付后运行兼容与保护（2026-09-12）
+
+- 增量模型的相对 `base_checkpoint` 以该模型所在目录解析，支持整目录迁移。绝对路径继续按原值解析；不会猜测 D/E 盘映射或自动改写外部数据路径。
+- 新增量输出不能覆盖基础 checkpoint、已有权重或已有时间戳报告。需要保留同一基础模型的多个增量版本时，应使用新的文件名与时间戳。
+- 项目清理扫描完整增量依赖链。选择保留时先核对所有目标目录，保存从基础模型继承的配置，再将各后代作为独立模型保留；不会用已有报告目录覆盖保留结果。原始相对报告布局继续受支持。
+- checkpoint 仍使用项目已有的 PyTorch 字典格式，其中可能包含 NumPy 元数据。读取端显式指定 `weights_only=False` 以保留这一契约，未修改模型版本或重写旧权重。PyTorch 2.6 改变了省略该参数时的默认行为，见[官方序列化说明](https://docs.pytorch.org/docs/2.6/notes/serialization.html#torch-load-with-weights-only-true)。仅加载本项目生成或已确认可信来源的 checkpoint。
+- R6 开关只改变 GUI 对缺少验证清单的单数据集的放行方式；不会改变模型结构、温度标准化、损失或训练/验证划分，也不会取消已有验证集。

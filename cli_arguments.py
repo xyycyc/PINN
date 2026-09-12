@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 
 from .data_process.split_policy import SPLIT_EXPERIMENT_POLICIES
 
@@ -18,6 +19,13 @@ LEGACY_NOOP_WEIGHT_OPTIONS: tuple[str, ...] = (
     "fixed_weight_dimension",
     "fixed_weight_mode",
 )
+
+
+def _finite_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise argparse.ArgumentTypeError("必须是有限数字，不能使用 NaN 或无穷大")
+    return parsed
 
 
 def _positive_int(value: str) -> int:
@@ -50,31 +58,31 @@ def _add_fixed_weight_options(parser: argparse.ArgumentParser) -> None:
     """
     parser.add_argument(
         "--fixed-weight-cnn",
-        type=float,
+        type=_finite_float,
         default=None,
         help="CNN 分支权重；固定模式为常量，可学习模式为初始值",
     )
     parser.add_argument(
         "--fixed-weight-lstm",
-        type=float,
+        type=_finite_float,
         default=None,
         help="LSTM 分支权重；固定模式为常量，可学习模式为初始值",
     )
     parser.add_argument(
         "--fixed-weight-material",
-        type=float,
+        type=_finite_float,
         default=None,
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--fixed-weight-dimension",
-        type=float,
+        type=_finite_float,
         default=None,
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--fixed-weight-mode",
-        type=float,
+        type=_finite_float,
         default=None,
         help=argparse.SUPPRESS,
     )
@@ -99,7 +107,7 @@ def _add_runtime_options(
     )
     parser.add_argument(
         "--physics-residual-weight",
-        type=float,
+        type=_finite_float,
         default=0.1,
         help="residual_pinn 模式下物理残差项权重",
     )
@@ -131,7 +139,7 @@ def _add_online_update_runtime_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--physics-residual-weight",
-        type=float,
+        type=_finite_float,
         default=None,
         help="residual_pinn 物理残差权重；默认与基础 checkpoint 一致",
     )
@@ -164,7 +172,7 @@ def _add_preprocess_options(
     )
     parser.add_argument(
         "--clip-quantile",
-        type=float,
+        type=_finite_float,
         default=numeric_default,
         help=f"clip 分位数阈值{inheritance_help}",
     )
@@ -199,7 +207,7 @@ def _add_predict_runtime_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--physics-residual-weight",
-        type=float,
+        type=_finite_float,
         default=None,
         help="物理残差权重；默认与 checkpoint 一致",
     )
@@ -215,13 +223,13 @@ def _add_dataset_split_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--split-test-ratio",
-        type=float,
+        type=_finite_float,
         default=0.2,
         help="测试集比例 (0,1)，仅在启用 --split-dataset 时生效",
     )
     parser.add_argument(
         "--split-validation-ratio",
-        type=float,
+        type=_finite_float,
         default=0.1,
         help="固定节点 case 的验证集比例，默认 0.1；旧网格数据不使用该参数",
     )
@@ -348,7 +356,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     build_db.add_argument(
         "--external-test-time-min-s",
-        type=float,
+        type=_finite_float,
         default=0.0,
     )
     build_db.add_argument(

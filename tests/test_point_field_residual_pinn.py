@@ -169,7 +169,7 @@ class PointFieldResidualPinnTests(unittest.TestCase):
                     train_name=mode,
                 )
                 checkpoints[mode] = checkpoint
-                bundle = torch.load(checkpoint, map_location="cpu")
+                bundle = torch.load(checkpoint, map_location="cpu", weights_only=False)
                 row = bundle["history"][0]
                 self.assertEqual(row["training_mode"], mode)
                 self.assertEqual(row["acoustic_loss"], 0.0)
@@ -207,7 +207,7 @@ class PointFieldResidualPinnTests(unittest.TestCase):
                     checkpoint,
                     output_name=f"{mode}-incremental.pt",
                 )
-                incremental_bundle = torch.load(incremental, map_location="cpu")
+                incremental_bundle = torch.load(incremental, map_location="cpu", weights_only=False)
                 incremental_row = incremental_bundle["history"][0]
                 self.assertEqual(incremental_row["training_mode"], mode)
                 self.assertIn("temperature_mae_k", incremental_row)

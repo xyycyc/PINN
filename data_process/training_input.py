@@ -37,6 +37,8 @@ def resolve_training_manifest_pair(
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             payload = {}
+        if not isinstance(payload, dict):
+            raise ValueError(f"训练清单顶层必须是 JSON 对象: {path}")
         if payload.get("collection_kind") == "sample_material_dataset_collection":
             return path, None
         explicit_train = path
@@ -48,7 +50,7 @@ def resolve_training_manifest_pair(
     if split_config.is_file():
         try:
             split_payload = json.loads(split_config.read_text(encoding="utf-8"))
-            raw_manifests = split_payload.get("manifests", {})
+            raw_manifests = split_payload.get("manifests", {}) if isinstance(split_payload, dict) else {}
             if isinstance(raw_manifests, dict):
                 declared = raw_manifests
         except (OSError, json.JSONDecodeError):

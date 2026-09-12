@@ -407,7 +407,10 @@ class MaterialSplitEditor(ttk.Frame):
         ]
 
     def to_settings(self) -> dict[str, dict[str, float]]:
-        current = self.as_dict(validate=False) or dict(self._initial)
+        try:
+            current = self.as_dict() or dict(self._initial)
+        except ValueError as exc:
+            raise FormValidationError(str(exc), self.table) from exc
         return {
             key: {
                 "train": values[0],

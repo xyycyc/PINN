@@ -328,7 +328,7 @@ def discover_unregistered_checkpoints(
             if resolved in registered:
                 continue
             try:
-                bundle = torch.load(pt_path, map_location="cpu")
+                bundle = torch.load(pt_path, map_location="cpu", weights_only=False)
             except Exception:
                 continue
             if not isinstance(bundle, dict) or "model_state" not in bundle:
