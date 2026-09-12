@@ -9,6 +9,7 @@ from tkinter import messagebox, ttk
 from typing import Any
 
 from ...data_process import latest_material_collection, latest_split_manifest
+from ...paths import resolve_source_path
 from ..settings import Settings
 from ..rules import resolve_gui_project_path
 from ..widgets import (
@@ -21,7 +22,8 @@ from ..widgets import (
     LabeledNumber,
     ScrollableFrame,
     Section,
-    add_button_row,
+    FormValidationError,
+    wrapped_label,
 )
 
 
@@ -67,36 +69,66 @@ class BaseCommandTab(ttk.Frame):
         path_settings_tab: BaseCommandTab | None = None,
     ) -> None:
         super().__init__(master)
-        self._run_cb = run_callback
-        self._stop_cb = stop_callback
+        self._run_cb, self._stop_cb = run_callback, stop_callback
         self.repo_root = repo_root
         self.settings = settings or Settings()
         self._path_settings = path_settings_tab
         self.common = self.settings.section("common")
-        self.local = self.settings.section(self.settings_section) if self.settings_section else {}
-
-        # 先固定底部按钮条，再 pack 可滚动表单，避免窗口纵向缩小时「执行/停止」被挤出可视区域。
-        self._action_bar = ttk.Frame(self)
-        self._action_bar.pack(side="bottom", fill="x", padx=PADX * 2, pady=(PADY, PADY * 2))
-        ttk.Separator(self, orient="horizontal").pack(side="bottom", fill="x", padx=PADX * 2)
-        button_row = add_button_row(
-            self._action_bar,
-            [
-                (self.primary_button_text, self._on_run, "Primary.TButton"),
-                ("停止", self._on_stop, "Danger.TButton"),
-            ],
+        self.local = (
+            self.settings.section(self.settings_section)
+            if self.settings_section
+            else {}
         )
-        button_row.pack(side="right")
+        self._busy = False
 
-        if self.description:
-            ttk.Label(self, text=self.description, wraplength=900, foreground="#444").pack(
-                side="top", anchor="w", fill="x", padx=PADX * 2, pady=(PADY * 2, 0)
+        # Pack the actions first so that they remain reachable on short screens.
+        self._action_bar = ttk.Frame(self, padding=(20, 12))
+        self._action_bar.pack(side="bottom", fill="x")
+        self._feedback = tk.StringVar(value="")
+        self._feedback_label = wrapped_label(
+            self._action_bar, "", textvariable=self._feedback, style="Error.TLabel"
+        )
+        self._button_row = buttons = ttk.Frame(self._action_bar)
+        buttons.pack(fill="x")
+        action_text = {
+            "build_db": "构建数据库",
+            "train": "开始训练",
+            "predict": "开始预测",
+            "validate": "开始校验",
+            "demo": "运行演示",
+        }.get(self.settings_section, self.primary_button_text)
+        self._run_button = ttk.Button(
+            buttons, text=action_text, command=self._on_run, style="Primary.TButton"
+        )
+        self._run_button.pack(side="right")
+        self._stop_button = None
+        if self.settings_section != "common":
+            self._stop_button = ttk.Button(
+                buttons,
+                text="停止任务",
+                command=self._on_stop,
+                style="Danger.TButton",
+                state="disabled",
             )
+            self._stop_button.pack(side="right", padx=(0, 10))
+            self._preview_button = ttk.Button(
+                buttons,
+                text="预览命令",
+                command=self._on_preview,
+                style="Quiet.TButton",
+            )
+            self._preview_button.pack(side="left")
+        ttk.Separator(self).pack(side="bottom", fill="x")
 
+        heading = ttk.Frame(self, padding=(24, 16, 24, 6))
+        heading.pack(fill="x")
+        ttk.Label(heading, text=self.title, style="PageTitle.TLabel").pack(anchor="w")
+        if self.description:
+            wrapped_label(heading, self.description, style="Muted.TLabel").pack(
+                fill="x", pady=(5, 0)
+            )
         self.scroll = ScrollableFrame(self)
-        self.scroll.pack(side="top", fill="both", expand=True, padx=PADX, pady=PADY)
-
-        # 子类填充表单
+        self.scroll.pack(fill="both", expand=True, padx=12, pady=(6, 10))
         self.build_form(self.scroll.inner)
 
     # ---- 子类需要重写 ------------------------------------------------------
@@ -191,7 +223,9 @@ class BaseCommandTab(ttk.Frame):
         }
 
         if include_fixed_weights:
-            fixed_section = Section(parent, "CNN/LSTM 分支权重（可学习模式下作为初始值）")
+            fixed_section = Section(
+                parent, "CNN/LSTM 分支权重（可学习模式下作为初始值）"
+            )
             fixed_section.pack(fill="x", padx=PADX, pady=PADY)
 
             fw_cnn = LabeledNumber(
@@ -236,7 +270,9 @@ class BaseCommandTab(ttk.Frame):
             result["epochs"] = epochs
         return result
 
-    def add_io_root_section(self, parent: tk.Misc, title: str = "输入/输出根目录") -> dict[str, object]:
+    def add_io_root_section(
+        self, parent: tk.Misc, title: str = "输入/输出根目录"
+    ) -> dict[str, object]:
         section = Section(parent, title)
         section.pack(fill="x", padx=PADX, pady=PADY)
         data_root = FileEntry(
@@ -257,9 +293,9 @@ class BaseCommandTab(ttk.Frame):
 
     def io_root_args(self, controls: dict[str, object]) -> list[str]:
         args: list[str] = []
-        if (val := controls["data_root"].get()):  # type: ignore[union-attr]
+        if val := controls["data_root"].get():  # type: ignore[union-attr]
             args.extend(["--data-root", str(val)])
-        if (val := controls["result_root"].get()):  # type: ignore[union-attr]
+        if val := controls["result_root"].get():  # type: ignore[union-attr]
             args.extend(["--result-root", str(val)])
         return args
 
@@ -274,16 +310,11 @@ class BaseCommandTab(ttk.Frame):
 
         section = Section(parent, "子进程工作目录")
         section.pack(fill="x", padx=PADX, pady=PADY)
-        ttk.Label(
+        wrapped_label(
             section,
-            text=(
-                "子进程始终使用启动本窗口的 Python 解释器；"
-                "工作目录留空时为 ai_model 包目录的上一级，以便正确执行 python -m ai_model。"
-            ),
-            wraplength=880,
-            foreground="#555",
-            justify="left",
-        ).pack(anchor="w", padx=PADX, pady=(0, PADY))
+            "通常留空即可。仅在需要指定运行位置时修改；程序使用启动窗口时的 Python 环境。",
+            style="Hint.TLabel",
+        ).pack(fill="x", padx=PADX, pady=(0, PADY))
 
         launch_root = FileEntry(
             section,
@@ -351,11 +382,7 @@ class BaseCommandTab(ttk.Frame):
         smooth_w = LabeledNumber(
             section,
             "平滑窗口宽度",
-            int(
-                self._cfg_value(
-                    "smooth_window", self.common.get("smooth_window", 11)
-                )
-            ),
+            int(self._cfg_value("smooth_window", self.common.get("smooth_window", 11))),
             is_float=False,
         )
         smooth_w.pack(fill="x", padx=PADX, pady=PADY)
@@ -377,12 +404,16 @@ class BaseCommandTab(ttk.Frame):
             "smooth_window": smooth_w,
         }
 
-    def apply_runtime_to_controls(self, controls: dict[str, object], runtime: dict[str, Any]) -> None:
+    def apply_runtime_to_controls(
+        self, controls: dict[str, object], runtime: dict[str, Any]
+    ) -> None:
         """用解析得到的训练运行参数填充 runtime 控件。"""
 
         controls["device"].set(str(runtime.get("device", "cuda")))  # type: ignore[union-attr]
         controls["training_mode"].set(str(runtime.get("training_mode", "normal")))  # type: ignore[union-attr]
-        controls["residual_weight"].set(float(runtime.get("physics_residual_weight", 0.1)))  # type: ignore[union-attr]
+        controls["residual_weight"].set(
+            float(runtime.get("physics_residual_weight", 0.1))
+        )  # type: ignore[union-attr]
         controls["learnable"].set(bool(runtime.get("learnable_branch_weights", False)))  # type: ignore[union-attr]
         for key in ("fixed_weight_cnn", "fixed_weight_lstm"):
             ctrl = controls.get(key)
@@ -413,7 +444,11 @@ class BaseCommandTab(ttk.Frame):
                 args.extend(["--training-mode", training_mode])
             if residual is not None:
                 args.extend(["--physics-residual-weight", str(residual)])
-            args.append("--learnable-branch-weights" if learnable else "--no-learnable-branch-weights")
+            args.append(
+                "--learnable-branch-weights"
+                if learnable
+                else "--no-learnable-branch-weights"
+            )
             for cli_flag, key in (
                 ("--fixed-weight-cnn", "fixed_weight_cnn"),
                 ("--fixed-weight-lstm", "fixed_weight_lstm"),
@@ -557,18 +592,66 @@ class BaseCommandTab(ttk.Frame):
             return ""
 
     # ---- 内部按钮事件 ------------------------------------------------------
-    def _on_run(self) -> None:
+    def show_validation_error(self, error: ValueError) -> None:
+        self._feedback.set(str(error))
+        self._feedback_label.pack(fill="x", before=self._button_row, pady=(0, 8))
+        if isinstance(error, FormValidationError):
+            self.scroll.reveal(error.widget)
+            error.widget.focus_set()
+
+    def clear_validation_error(self) -> None:
+        self._feedback.set("")
+        self._feedback_label.pack_forget()
+
+    def _prepare_command(self) -> list[str] | None:
+        self.clear_validation_error()
         try:
             self.validate_form()
-            cmd = self.compose_command()
+            return self.compose_command()
         except ValueError as exc:
-            messagebox.showwarning("参数有误", str(exc))
-            return
+            self.show_validation_error(exc)
         except Exception as exc:  # pragma: no cover
-            messagebox.showerror("内部错误", str(exc))
-            return
-        self._run_cb(cmd)
+            messagebox.showerror("内部错误", str(exc), parent=self.winfo_toplevel())
+        return None
+
+    def _on_run(self) -> None:
+        if not self._busy:
+            command = self._prepare_command()
+            if command is not None:
+                self._run_cb(command)
+
+    def _on_preview(self) -> None:
+        from ..dialogs import show_command_preview
+        from ...paths import resolve_project_path
+
+        command = self._prepare_command()
+        if command is not None:
+            paths = self._path_settings
+            raw = (
+                paths.launch_env["launch_root"].get()
+                if paths is not None
+                else self.common.get("launch_root", "")
+            )
+            cwd = (
+                resolve_project_path(raw, repo_root=self.repo_root)
+                if raw
+                else Path(self.repo_root).parent
+            )
+            show_command_preview(self.winfo_toplevel(), self.title, command, cwd)
+
+    def set_busy(self, busy: bool) -> None:
+        self._busy = busy
+        if self._stop_button is not None:
+            self._run_button.configure(state="disabled" if busy else "normal")
+            self._stop_button.configure(state="normal" if busy else "disabled")
+
+    def _resolve_source_path(self, value: str) -> Path:
+        return resolve_source_path(
+            value, data_root=self._resolve_data_root_path(), repo_root=self.repo_root
+        )
 
     def _on_stop(self) -> None:
-        if messagebox.askyesno("确认", "确定要停止当前任务吗？"):
+        if self._busy and messagebox.askyesno(
+            "停止任务", "确定要停止当前任务吗？", parent=self.winfo_toplevel()
+        ):
             self._stop_cb()

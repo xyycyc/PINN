@@ -30,7 +30,9 @@ from .tabs import (
     TrainTab,
     ValidateTab,
 )
-from .widgets import PADX, PADY, configure_styles
+from .widgets import FormValidationError
+from .theme import COLORS, configure_styles
+from .task_status import TaskStatus
 
 
 AI_MODEL_PACKAGE_ROOT = ai_model_package_dir()
@@ -63,8 +65,10 @@ class AiModelApp:
         # 各 Tab 内仍用 ``repo_root`` 指代 ai_model 包目录（解析相对 data/result 路径等）。
         self.repo_root = self.package_root
         self.root.title("ai_model 图形化操作面板")
-        self.root.geometry("1280x820")
-        self.root.minsize(1080, 720)
+        width = min(1280, max(1000, self.root.winfo_screenwidth() - 80))
+        height = min(820, max(640, self.root.winfo_screenheight() - 120))
+        self.root.geometry(f"{width}x{height}")
+        self.root.minsize(1000, 640)
         configure_styles(self.root)
 
         self._log_queue: queue.Queue[str | tuple[int, int | None]] = queue.Queue()
@@ -77,13 +81,15 @@ class AiModelApp:
         )
 
         self._build_menu()
-        self._build_body()
+        self._build_header()
         self._build_statusbar()
+        self._build_body()
+        self.toggle_log()
 
         self._log_line(f"[app] ai_model 包目录: {self.package_root}")
         self._log_line(f"[app] 子进程默认工作目录: {self._resolve_launch_root()}")
         self._log_line(f"[app] 配置文件: {self.settings.path}")
-        self._log_line("[app] 选中一个功能页，填好参数后点击右下角「执行」即可。")
+        self._log_line("[app] 选中功能页后可预览命令，或点击右下角按钮开始任务。")
         self._poll_log_queue()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -91,10 +97,17 @@ class AiModelApp:
     def _resolve_launch_root(self) -> Path:
         """Use the current form immediately; saving controls the next session."""
         tab = getattr(self, "_path_settings_tab", None)
-        raw = (tab.launch_env["launch_root"].get() if tab is not None
-               else self.settings.get("common", "launch_root", ""))
+        raw = (
+            tab.launch_env["launch_root"].get()
+            if tab is not None
+            else self.settings.get("common", "launch_root", "")
+        )
         raw = str(raw).strip()
-        return resolve_project_path(raw, repo_root=self.package_root) if raw else self.package_root.parent
+        return (
+            resolve_project_path(raw, repo_root=self.package_root)
+            if raw
+            else self.package_root.parent
+        )
 
     # ------------------------------------------------------------------
     # UI 构建
@@ -113,9 +126,7 @@ class AiModelApp:
         menubar.add_cascade(label="运行", menu=run_menu)
 
         cfg_menu = tk.Menu(menubar, tearoff=0)
-        cfg_menu.add_command(
-            label="重新加载配置文件", command=self.reload_settings
-        )
+        cfg_menu.add_command(label="重新加载配置文件", command=self.reload_settings)
         cfg_menu.add_command(
             label="把当前表单保存为默认值", command=self.save_settings_from_forms
         )
@@ -133,81 +144,171 @@ class AiModelApp:
         menubar.add_cascade(label="帮助", menu=help_menu)
         self.root.config(menu=menubar)
 
-    def _build_body(self) -> None:
-        paned = ttk.Panedwindow(self.root, orient="vertical")
-        paned.pack(fill="both", expand=True, padx=PADX, pady=PADY)
+    def _build_header(self) -> None:
+        header = ttk.Frame(self.root, padding=(22, 14))
+        header.pack(fill="x")
+        ttk.Label(header, text="AI", style="Brand.TLabel").pack(
+            side="left", padx=(0, 14)
+        )
+        titles = ttk.Frame(header)
+        titles.pack(side="left")
+        ttk.Label(titles, text="温度场重构", style="AppTitle.TLabel").pack(anchor="w")
+        ttk.Label(
+            titles, text="数据准备  /  模型训练  /  预测与校验", style="Hint.TLabel"
+        ).pack(anchor="w", pady=(2, 0))
+        ttk.Button(
+            header, text="打开输出目录", command=self.open_result_directory
+        ).pack(side="right")
+        ttk.Button(
+            header,
+            text="保存表单",
+            command=self.save_settings_from_forms,
+            style="Quiet.TButton",
+        ).pack(side="right", padx=(0, 10))
+        taskbar = ttk.Frame(self.root, padding=(22, 8))
+        taskbar.pack(fill="x", pady=(1, 0))
+        self.task_status = TaskStatus(taskbar)
+        self.task_status.pack(side="left")
+        self._log_toggle_button = ttk.Button(
+            taskbar, text="收起日志", style="Quiet.TButton", command=self.toggle_log
+        )
+        self._log_toggle_button.pack(side="right")
 
-        notebook_frame = ttk.Frame(paned)
-        paned.add(notebook_frame, weight=3)
+    def _build_body(self) -> None:
+        self._paned = ttk.Panedwindow(self.root, orient="vertical")
+        self._paned.pack(fill="both", expand=True, padx=16, pady=(10, 0))
+        notebook_frame = ttk.Frame(self._paned)
+        self._paned.add(notebook_frame, weight=1)
 
         self._tabs: list[Any] = []
-        use_grouped_notebook = len(TAB_GROUPS) > 1
-        if use_grouped_notebook:
-            outer_nb = ttk.Notebook(notebook_frame)
-            outer_nb.pack(fill="both", expand=True)
+        grouped = len(TAB_GROUPS) > 1
+        if grouped:
+            outer = ttk.Notebook(notebook_frame)
+            outer.pack(fill="both", expand=True)
         for group_name, tab_classes in TAB_GROUPS:
-            if use_grouped_notebook:
-                inner_nb = ttk.Notebook(outer_nb)
-                outer_nb.add(inner_nb, text=group_name)
+            notebook = ttk.Notebook(outer if grouped else notebook_frame)
+            if grouped:
+                outer.add(notebook, text=group_name)
             else:
-                inner_nb = ttk.Notebook(notebook_frame)
-                inner_nb.pack(fill="both", expand=True)
-            path_settings_ref: Any | None = None
-            for tab_cls in tab_classes:
-                tab_kwargs: dict[str, Any] = {}
-                if group_name == "主流程" and path_settings_ref is not None:
-                    if tab_cls is not PathSettingsTab:
-                        tab_kwargs["path_settings_tab"] = path_settings_ref
-                tab = tab_cls(
-                    inner_nb,
+                notebook.pack(fill="both", expand=True)
+            path_settings = None
+            for tab_class in tab_classes:
+                kwargs = (
+                    {"path_settings_tab": path_settings}
+                    if path_settings is not None
+                    else {}
+                )
+                tab = tab_class(
+                    notebook,
                     run_callback=self.run_command,
                     stop_callback=self.stop_command,
                     repo_root=self.repo_root,
                     settings=self.settings,
-                    **tab_kwargs,
+                    **kwargs,
                 )
                 if group_name == "主流程" and isinstance(tab, PathSettingsTab):
-                    path_settings_ref = tab
-                    self._path_settings_tab = tab
-                inner_nb.add(tab, text=getattr(tab_cls, "title", tab_cls.__name__))
+                    path_settings = self._path_settings_tab = tab
+                notebook.add(tab, text=tab.title)
                 self._tabs.append(tab)
 
-        log_frame = ttk.Labelframe(paned, text="运行日志", padding=4)
-        paned.add(log_frame, weight=2)
-
-        log_toolbar = ttk.Frame(log_frame)
-        log_toolbar.pack(fill="x", pady=(0, PADY))
-        ttk.Button(log_toolbar, text="清空日志", command=self.clear_log).pack(side="left")
-        ttk.Button(log_toolbar, text="复制日志", command=self.copy_log).pack(
-            side="left", padx=(PADX, 0)
+        self._log_frame = ttk.Frame(self._paned, padding=(12, 8))
+        self._paned.add(self._log_frame, weight=0)
+        self._log_visible = True
+        self._log_height = 175
+        toolbar = ttk.Frame(self._log_frame)
+        toolbar.pack(fill="x", pady=(0, 6))
+        ttk.Label(toolbar, text="运行日志", style="Title.TLabel").pack(
+            side="left", padx=(0, 16)
         )
-        ttk.Button(
-            log_toolbar, text="保存日志…", command=self.save_log
-        ).pack(side="left", padx=(PADX, 0))
         self._autoscroll_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(
-            log_toolbar, text="自动滚动到底部", variable=self._autoscroll_var
-        ).pack(side="left", padx=(PADX * 2, 0))
+            toolbar, text="跟随最新输出", variable=self._autoscroll_var
+        ).pack(side="left")
+        for label, action in (
+            ("保存日志…", self.save_log),
+            ("复制", self.copy_log),
+            ("清空", self.clear_log),
+        ):
+            ttk.Button(toolbar, text=label, command=action, style="Quiet.TButton").pack(
+                side="right", padx=(6, 0)
+            )
 
-        text_frame = ttk.Frame(log_frame)
+        text_frame = ttk.Frame(self._log_frame)
         text_frame.pack(fill="both", expand=True)
         self.log_text = tk.Text(
             text_frame,
             wrap="none",
+            height=5,
             font=("Consolas", 10),
-            background="#111",
-            foreground="#d8d8d8",
-            insertbackground="#d8d8d8",
+            background=COLORS["log"],
+            foreground=COLORS["ink"],
+            insertbackground=COLORS["ink"],
+            selectbackground="#d5e8ed",
+            relief="flat",
+            padx=10,
+            pady=6,
             state="disabled",
         )
-        yscroll = ttk.Scrollbar(text_frame, orient="vertical", command=self.log_text.yview)
-        xscroll = ttk.Scrollbar(text_frame, orient="horizontal", command=self.log_text.xview)
+        yscroll = ttk.Scrollbar(
+            text_frame, orient="vertical", command=self.log_text.yview
+        )
+        xscroll = ttk.Scrollbar(
+            text_frame, orient="horizontal", command=self.log_text.xview
+        )
         self.log_text.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
         self.log_text.grid(row=0, column=0, sticky="nsew")
         yscroll.grid(row=0, column=1, sticky="ns")
         xscroll.grid(row=1, column=0, sticky="ew")
         text_frame.rowconfigure(0, weight=1)
         text_frame.columnconfigure(0, weight=1)
+        self.root.after_idle(self._position_log_sash)
+
+    def _position_log_sash(self) -> None:
+        if self._log_visible:
+            # Adding a forgotten pane schedules another geometry pass. Finish it
+            # before setting the sash, or Tk can overwrite the requested height.
+            self._paned.update_idletasks()
+            self._paned.sashpos(
+                0, max(220, self._paned.winfo_height() - self._log_height)
+            )
+
+    def toggle_log(self) -> None:
+        if self._log_visible:
+            height = self._log_frame.winfo_height()
+            if height > 1:
+                self._log_height = max(100, height)
+            self._paned.forget(self._log_frame)
+        else:
+            self._paned.add(self._log_frame, weight=0)
+        self._log_visible = not self._log_visible
+        self._log_toggle_button.configure(
+            text="收起日志" if self._log_visible else "展开日志"
+        )
+        if self._log_visible:
+            self.root.after_idle(self._position_log_sash)
+
+    def open_result_directory(self) -> None:
+        path = self._path_settings_tab._resolve_result_root_path()
+        if not path.is_dir():
+            messagebox.showinfo(
+                "输出目录尚未创建",
+                f"运行任务生成结果后即可打开：\n{path}",
+                parent=self.root,
+            )
+            return
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(str(path))
+            else:
+                subprocess.Popen(
+                    ["open" if sys.platform == "darwin" else "xdg-open", str(path)]
+                )
+        except OSError as exc:
+            messagebox.showerror("无法打开目录", str(exc), parent=self.root)
+
+    def _set_busy(self, busy: bool) -> None:
+        for tab in self._tabs:
+            tab.set_busy(busy)
 
     def _build_statusbar(self) -> None:
         self._status_var = tk.StringVar(value="空闲")
@@ -228,22 +329,41 @@ class AiModelApp:
             return
         launch_root = self._resolve_launch_root()
         if not launch_root.is_dir():
-            messagebox.showwarning("路径有误", f"子进程工作目录不存在或不是目录: {launch_root}")
+            messagebox.showwarning(
+                "路径有误", f"子进程工作目录不存在或不是目录: {launch_root}"
+            )
             return
+        titles = {
+            "build-db": "构建数据库",
+            "train": "训练模型",
+            "predict": "温度场预测",
+            "validate": "校验数据",
+            "online-update": "增量训练",
+            "demo": "一键演示",
+        }
+        title = next((titles[part] for part in cmd if part in titles), "当前任务")
+        if not self._log_visible:
+            self.toggle_log()
+        self.task_status.start(title)
+        self._set_busy(True)
         self._run_id += 1
         run_id = self._run_id
         self._set_status(f"运行中: {format_command(cmd)[:80]}…")
         started = self.runner.run(
-            cmd, cwd=launch_root,
+            cmd,
+            cwd=launch_root,
             on_finish=lambda code: self._on_finish(code, run_id),
         )
         if not started:
             self._set_status("启动失败")
+            self.task_status.finish(-1)
+            self._set_busy(False)
 
     def stop_command(self) -> None:
         if not self.runner.is_running:
             self._log_line("[app] 当前没有正在运行的任务。")
             return
+        self.task_status.stopping()
         self._set_status("正在停止任务…")
         self.runner.request_stop()
 
@@ -285,12 +405,16 @@ class AiModelApp:
                     if payload:
                         sections[section] = payload
             target = self.settings.save_sections(sections)
+        except FormValidationError as exc:
+            tab.master.select(tab)
+            tab.show_validation_error(exc)
+            self._set_status("表单尚未保存，请修正标记的输入。")
+            return
         except Exception as exc:
             messagebox.showerror("保存失败", str(exc))
             return
         self._log_line(f"[settings] 当前表单已写回 {target}")
         self._set_status(f"配置已保存: {target}")
-        messagebox.showinfo("已保存", f"当前表单状态已保存到\n{target}")
 
     def open_settings_in_editor(self) -> None:
         path = self.settings.path
@@ -316,15 +440,31 @@ class AiModelApp:
         self._set_status(f"配置文件路径已复制: {self.settings.path}")
 
     def _rebuild_tabs(self) -> None:
-        """Rebuild forms after reload while preserving the session log."""
+        """Keep the active page and log layout when applying reloaded settings."""
         previous_log = self.log_text.get("1.0", "end-1c")
         autoscroll = self._autoscroll_var.get()
-        for child in list(self.root.children.values()):
-            if isinstance(child, ttk.Panedwindow):
-                child.destroy()
+        selected = next(
+            (
+                tab.settings_section
+                for tab in self._tabs
+                if str(tab) == tab.master.select()
+            ),
+            "common",
+        )
+        visible = self._log_visible
+        height = self._log_frame.winfo_height() if visible else self._log_height
+        self._paned.destroy()
         self._build_body()
+        self._log_height = max(100, height)
         self._autoscroll_var.set(autoscroll)
         self._append_to_text(previous_log)
+        for tab in self._tabs:
+            if tab.settings_section == selected:
+                tab.master.select(tab)
+                break
+        if not visible:
+            self.toggle_log()
+            self._log_height = height
         self._log_line("[app] 功能页已根据新配置重建。")
 
     # ------------------------------------------------------------------
@@ -349,11 +489,20 @@ class AiModelApp:
             if isinstance(item, tuple):
                 run_id, exit_code = item
                 if run_id == self._run_id:
-                    self._set_status("启动失败" if exit_code == -1 else f"已结束，退出码：{exit_code}")
+                    self._set_status(
+                        "启动失败"
+                        if exit_code == -1
+                        else f"已结束，退出码：{exit_code}"
+                    )
+                    self.task_status.finish(exit_code)
+                    self._set_busy(False)
+                    if exit_code != 0 and not self._log_visible:
+                        self.toggle_log()
             else:
                 lines.append(item)
         if lines:
             self._append_to_text("".join(lines))
+        self.task_status.tick()
         if self._closing and not self.runner.is_running:
             self._destroy_window()
             return

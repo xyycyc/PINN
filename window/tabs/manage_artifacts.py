@@ -19,7 +19,8 @@ from ..rules import (
     unique_materials,
 )
 from ..settings import DEFAULT_SETTINGS, Settings
-from ..widgets import FileEntry, LabeledCombobox, PADX, PADY, Section
+from ..widgets import FileEntry, LabeledCombobox, PADX, PADY, ScrollableFrame, Section, wrapped_label
+from ..theme import COLORS
 
 NO_RULE_PLACEHOLDER = "暂无"
 
@@ -83,14 +84,24 @@ class ManageArtifactsTab(ttk.Frame):
                         return value
             return _standalone_root_default(self.common, self.local, key, fallback)
 
-        ttk.Label(
-            self,
-            text=self.description,
-            wraplength=900,
-            foreground="#444",
-        ).pack(anchor="w", padx=PADX * 2, pady=(PADY * 2, 0))
+        self._busy = False
+        actions = ttk.Frame(self, padding=(20, 12))
+        actions.pack(side="bottom", fill="x")
+        self._delete_button = ttk.Button(actions, text="执行删除…", command=self._execute_cleanup, style="Danger.TButton")
+        self._delete_button.pack(side="right")
+        ttk.Button(actions, text="扫描关联产物", command=self._preview_cleanup, style="Primary.TButton").pack(side="right", padx=(0, 10))
+        self._cleanup_note = ttk.Label(actions, text="先扫描并核对待删除的文件。", style="Hint.TLabel")
+        self._cleanup_note.pack(side="left")
+        ttk.Separator(self).pack(side="bottom", fill="x")
+        heading = ttk.Frame(self, padding=(24, 16, 24, 6))
+        heading.pack(fill="x")
+        ttk.Label(heading, text=self.title, style="PageTitle.TLabel").pack(anchor="w")
+        wrapped_label(heading, self.description, style="Muted.TLabel").pack(fill="x", pady=(5, 0))
+        self.scroll = ScrollableFrame(self)
+        self.scroll.pack(fill="both", expand=True, padx=12, pady=(6, 10))
+        parent = self.scroll.inner
 
-        root_section = Section(self, "数据根目录")
+        root_section = Section(parent, "数据根目录")
         root_section.pack(fill="x", padx=PADX, pady=PADY)
         self.data_root = FileEntry(
             root_section,
@@ -110,7 +121,7 @@ class ManageArtifactsTab(ttk.Frame):
         self._bind_shared_root_variable("result_root", self.result_root)
 
         dims, modes = default_rule_choices()
-        rule_section = Section(self, "规则三元组")
+        rule_section = Section(parent, "规则三元组")
         rule_section.pack(fill="x", padx=PADX, pady=PADY)
         self.rule_material = LabeledCombobox(
             rule_section,
@@ -149,19 +160,20 @@ class ManageArtifactsTab(ttk.Frame):
         action_row = ttk.Frame(rule_section)
         action_row.pack(anchor="w", padx=PADX, pady=(PADY, PADY))
         ttk.Button(action_row, text="刷新规则映射", command=self._refresh_rule_rows).pack(side="left")
-        ttk.Button(action_row, text="扫描关联产物", command=self._preview_cleanup).pack(side="left", padx=(PADX, 0))
-        ttk.Button(action_row, text="执行删除", command=self._execute_cleanup).pack(side="left", padx=(PADX, 0))
 
-        preview_section = Section(self, "删除预览")
+        preview_section = Section(parent, "删除预览")
         preview_section.pack(fill="both", expand=True, padx=PADX, pady=PADY)
         self._preview = tk.Text(
             preview_section,
             wrap="word",
             font=("Consolas", 10),
             state="disabled",
-            background="#fafafa",
-            height=18,
+            background=COLORS["log"], foreground=COLORS["ink"], relief="flat", padx=10, pady=8,
+            height=12,
         )
+        preview_scroll = ttk.Scrollbar(preview_section, command=self._preview.yview)
+        preview_scroll.pack(side="right", fill="y")
+        self._preview.configure(yscrollcommand=preview_scroll.set)
         self._preview.pack(fill="both", expand=True, padx=PADX, pady=PADY)
 
         self._rule_rows: list[dict[str, str]] = []
@@ -360,7 +372,16 @@ class ManageArtifactsTab(ttk.Frame):
             lines.append("  - (未找到)")
         self._set_preview_text("\n".join(lines))
 
+    def set_busy(self, busy: bool) -> None:
+        self._busy = busy
+        self._delete_button.configure(state="disabled" if busy else "normal")
+        self._cleanup_note.configure(text="任务运行中，结束后可清理产物。" if busy else "先扫描并核对待删除的文件。")
+        # A task may produce new files; rebuild the plan before the next deletion.
+        self._latest_plan = None
+
     def _execute_cleanup(self) -> None:
+        if self._busy:
+            return
         checkpoint = self._selected_checkpoint_path()
         if not checkpoint:
             messagebox.showwarning("未选中模型", "当前规则组合未匹配到模型检查点。")

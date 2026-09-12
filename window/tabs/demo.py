@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import tkinter as tk
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from ...artifact_paths import (
@@ -50,6 +49,7 @@ class DemoTab(BaseCommandTab):
             "实验材料目录",
             default=str(self._cfg_value("experiment_dir", "raw/calibration_sweep")),
             directory=True,
+            resolver=self._resolve_source_path,
         )
         self.experiment_dir.pack(fill="x", padx=PADX, pady=PADY)
 
@@ -61,14 +61,10 @@ class DemoTab(BaseCommandTab):
         )
         self.multi_material_input.pack(fill="x", padx=PADX, pady=PADY)
 
-        def _resolve_material_parent(value: str) -> Path:
-            path = Path(value).expanduser()
-            return path if path.is_absolute() else self._resolve_data_root_path() / path
-
         self.material_splits = MaterialSplitEditor(
             section,
             source_getter=self.experiment_dir.get,
-            source_resolver=_resolve_material_parent,
+            source_resolver=self._resolve_source_path,
             initial=self._cfg_value("material_splits", {}),
         )
         self.material_splits.pack(fill="x", padx=PADX * 2, pady=PADY)
@@ -279,8 +275,7 @@ class DemoTab(BaseCommandTab):
             self.rule_mode.get(),
             self.rule_material.get(),
         )
-        raw_source = Path(self.experiment_dir.get()).expanduser()
-        source = raw_source if raw_source.is_absolute() else self._resolve_data_root_path() / raw_source
+        source = self._resolve_source_path(self.experiment_dir.get())
         fixed_node_cases = self.multi_material_input.get() or bool(discover_cases(source))
         if self.multi_material_input.get():
             self.material_splits.specs()

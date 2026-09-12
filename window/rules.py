@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 from dataclasses import dataclass
 from functools import lru_cache
@@ -123,7 +124,7 @@ def load_rule_rows(
         text = repaired
 
     rows: list[dict[str, str]] = []
-    with csv_path.open("r", encoding="utf-8", newline="") as handle:
+    with io.StringIO(text, newline="") as handle:
         reader = csv.DictReader(handle)
         if reader.fieldnames and all(name in reader.fieldnames for name in _RULE_FIELDNAMES):
             rows = [dict(row) for row in reader]

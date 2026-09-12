@@ -92,7 +92,7 @@ class TrainTab(BaseCommandTab):
         self.separate_materials.check.configure(command=self._sync_auto_manifest)
         self._sync_auto_manifest()
 
-        rule_section = Section(parent, "预训练规则登记（会写入 database/rule/trained_rules.csv）")
+        rule_section = Section(parent, "模型规则登记")
         rule_section.pack(fill="x", padx=PADX, pady=PADY)
         self.rule_dimension = LabeledCombobox(
             rule_section,
@@ -204,10 +204,10 @@ class TrainTab(BaseCommandTab):
         """Validate manifest compatibility and required runtime values."""
         manifest = self._manifest_for_validation()
         if not manifest:
-            raise ValueError("请选择训练数据集文件夹。")
+            raise self.manifest.invalid("请选择训练数据集文件夹。")
         path = resolve_gui_project_path(manifest, repo_root=self.repo_root)
         if not path.exists():
-            raise ValueError(f"训练数据集路径不存在: {path}")
+            raise self.manifest.invalid(f"训练数据集路径不存在: {path}")
         train_manifest, validation_manifest = resolve_training_manifest_pair(path)
         model_kind = manifest_model_kind(train_manifest, repo_root=self.repo_root)
         if model_kind != "material_collection" and validation_manifest is None:
@@ -216,13 +216,13 @@ class TrainTab(BaseCommandTab):
             raise ValueError("分别训练需要选择多材料建库生成的 material_collection.json。")
         epochs = self.runtime["epochs"].get()  # type: ignore[union-attr]
         if epochs is None or int(epochs) <= 0:
-            raise ValueError("训练轮数必须大于 0。")
+            raise self.runtime["epochs"].invalid("训练轮数必须大于 0。")
         patience = self.early_stopping_patience.get()
         if patience is None or int(patience) <= 0:
-            raise ValueError("早停耐心代数必须大于 0。")
+            raise self.early_stopping_patience.invalid("早停耐心代数必须大于 0。")
         residual = self.runtime["residual_weight"].get()  # type: ignore[union-attr]
         if residual is None or float(residual) < 0:
-            raise ValueError("物理残差权重必须大于或等于 0。")
+            raise self.runtime["residual_weight"].invalid("物理残差权重必须大于或等于 0。")
         if str(self.train_name.get() or "").strip():
             validate_artifact_basename(
                 self.train_name.get(),

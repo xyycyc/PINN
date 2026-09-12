@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import tkinter as tk
-from pathlib import Path
 from typing import Any
 
 from ...artifact_paths import (
@@ -58,6 +57,7 @@ class BuildDbTab(BaseCommandTab):
             "实验数据目录",
             default=str(self._cfg_value("experiment_dir", "raw/wumu")),
             directory=True,
+            resolver=self._resolve_source_path,
         )
         self.experiment_dir.pack(fill="x", padx=PADX, pady=PADY)
 
@@ -69,14 +69,10 @@ class BuildDbTab(BaseCommandTab):
         )
         self.multi_material_input.pack(fill="x", padx=PADX, pady=PADY)
 
-        def _resolve_material_parent(value: str) -> Path:
-            path = Path(value).expanduser()
-            return path if path.is_absolute() else self._resolve_data_root_path() / path
-
         self.material_splits = MaterialSplitEditor(
             section,
             source_getter=self.experiment_dir.get,
-            source_resolver=_resolve_material_parent,
+            source_resolver=self._resolve_source_path,
             initial=self._cfg_value("material_splits", {}),
         )
         self.material_splits.pack(fill="x", padx=PADX * 2, pady=PADY)
@@ -112,6 +108,7 @@ class BuildDbTab(BaseCommandTab):
             "外部仿真 CSV 目录（可选）",
             default=str(self._cfg_value("external_sim_dir", "")),
             directory=True,
+            resolver=self._resolve_source_path,
         )
         self.external_sim_dir.pack(fill="x", padx=PADX, pady=PADY)
 
@@ -145,6 +142,7 @@ class BuildDbTab(BaseCommandTab):
             "post0 CSV 目录",
             default=str(self._cfg_value("external_test_dir", "")),
             directory=True,
+            resolver=self._resolve_source_path,
         )
         self.external_test_dir.pack(fill="x", padx=PADX, pady=PADY)
         self.external_test_material = LabeledEntry(

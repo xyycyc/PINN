@@ -1,72 +1,73 @@
-"""GUI 通用控件库。
-
-集中放置标签输入、文件/目录选择、下拉框、复选项、Section 容器等
-组件，方便各 Tab 复用，保持视觉风格一致。
-"""
+"""Reusable, responsive desktop form controls."""
 
 from __future__ import annotations
 
+import math
 import tkinter as tk
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
+from ..paths import PACKAGE_ROOT, resolve_project_path
+from .theme import COLORS, configure_styles as configure_styles
 
-PADX = 6
-PADY = 4
+PADX = 8
+PADY = 5
 LABEL_WIDTH = 22
 
 
-def configure_styles(root: tk.Misc) -> None:
-    """设置中文字体与 ttk 主题，让所有窗口风格一致。"""
+def wrapped_label(master: tk.Misc, text: str, **kwargs: Any) -> ttk.Label:
+    """Wrap explanatory text to its allocated width, including after a resize."""
+    label = ttk.Label(master, text=text, wraplength=760, justify="left", **kwargs)
+    label.bind(
+        "<Configure>", lambda event: label.configure(wraplength=max(80, event.width))
+    )
+    return label
 
-    style = ttk.Style(root)
-    try:
-        style.theme_use("clam")
-    except tk.TclError:
-        pass
 
-    base_font = ("Microsoft YaHei UI", 10)
-    title_font = ("Microsoft YaHei UI", 11, "bold")
-    monospace = ("Consolas", 10)
+class FormValidationError(ValueError):
+    """A validation error that can lead the user back to the relevant control."""
 
-    root.option_add("*Font", base_font)
-    style.configure(".", font=base_font)
-    style.configure("Title.TLabel", font=title_font)
-    style.configure("Section.TLabelframe", padding=8)
-    style.configure("Section.TLabelframe.Label", font=title_font)
-    style.configure("Primary.TButton", padding=(14, 6))
-    style.configure("Danger.TButton", padding=(14, 6), foreground="#b30000")
-    style.configure("Status.TLabel", padding=(8, 4), background="#f0f0f0")
-
-    # 把字体常量挂到 root 上，方便 Text 控件复用。
-    root._mono_font = monospace  # type: ignore[attr-defined]
-    root._base_font = base_font  # type: ignore[attr-defined]
-    root._title_font = title_font  # type: ignore[attr-defined]
+    def __init__(self, message: str, widget: tk.Misc) -> None:
+        super().__init__(message)
+        self.widget = widget
 
 
 class Section(ttk.LabelFrame):
-    """带统一 padding 的分组容器。"""
-
     def __init__(self, master: tk.Misc, title: str, **kwargs: Any) -> None:
         super().__init__(master, text=title, style="Section.TLabelframe", **kwargs)
 
 
 class FormRow(ttk.Frame):
-    """单行表单：左侧标签 + 右侧控件。"""
+    """Aligned label, input area and optional explanation on a separate line."""
 
     def __init__(self, master: tk.Misc, label: str) -> None:
         super().__init__(master)
-        self.label = ttk.Label(self, text=label, width=LABEL_WIDTH, anchor="w")
-        self.label.pack(side="left", padx=(0, PADX))
+        self.label = ttk.Label(
+            self, text=label, width=LABEL_WIDTH, anchor="w", wraplength=190
+        )
+        self.label.grid(row=0, column=0, sticky="nw", padx=(0, 14), pady=(6, 0))
+        self.columnconfigure(1, weight=1)
         self.body = ttk.Frame(self)
-        self.body.pack(side="left", fill="x", expand=True)
+        self.body.grid(row=0, column=1, sticky="ew")
+        self.controls = ttk.Frame(self.body)
+        self.controls.pack(fill="x")
+
+    def add_hint(self, hint: str | None) -> None:
+        if hint:
+            self.hint = wrapped_label(self.body, hint, style="Hint.TLabel")
+            self.hint.pack(fill="x", pady=(4, 0))
+
+    def _watch_entry(self) -> None:
+        self.var.trace_add("write", lambda *_: self.entry.configure(style="TEntry"))
+
+    def invalid(self, message: str) -> FormValidationError:
+        self.entry.configure(style="Invalid.TEntry")
+        return FormValidationError(message, self.entry)
 
 
 class LabeledEntry(FormRow):
-    """标签 + 文本输入。"""
-
     def __init__(
         self,
         master: tk.Misc,
@@ -77,10 +78,10 @@ class LabeledEntry(FormRow):
     ) -> None:
         super().__init__(master, label)
         self.var = tk.StringVar(value=default)
-        self.entry = ttk.Entry(self.body, textvariable=self.var, width=width)
+        self.entry = ttk.Entry(self.controls, textvariable=self.var, width=width)
         self.entry.pack(side="left", fill="x", expand=True)
-        if hint:
-            ttk.Label(self.body, text=hint, foreground="#666").pack(side="left", padx=(PADX, 0))
+        self.add_hint(hint)
+        self._watch_entry()
 
     def get(self) -> str:
         return self.var.get().strip()
@@ -90,8 +91,6 @@ class LabeledEntry(FormRow):
 
 
 class LabeledNumber(FormRow):
-    """整数 / 浮点数输入。"""
-
     def __init__(
         self,
         master: tk.Misc,
@@ -104,27 +103,30 @@ class LabeledNumber(FormRow):
         super().__init__(master, label)
         self.is_float = is_float
         self.var = tk.StringVar(value=str(default))
-        self.entry = ttk.Entry(self.body, textvariable=self.var, width=width)
+        self.entry = ttk.Entry(self.controls, textvariable=self.var, width=width)
         self.entry.pack(side="left")
-        if hint:
-            ttk.Label(self.body, text=hint, foreground="#666").pack(side="left", padx=(PADX, 0))
+        self.add_hint(hint)
+        self._watch_entry()
 
     def get(self) -> float | int | None:
         text = self.var.get().strip()
         if not text:
             return None
         try:
-            return float(text) if self.is_float else int(text)
+            value = float(text) if self.is_float else int(text)
+            if self.is_float and not math.isfinite(value):
+                raise ValueError("non-finite number")
+            return value
         except ValueError as exc:
-            raise ValueError(f"{self.label.cget('text')} 不是合法数字: {text}") from exc
+            raise self.invalid(
+                f"{self.label.cget('text')}：请输入有效的{'小数或整数' if self.is_float else '整数'}（当前为 {text}）。"
+            ) from exc
 
     def set(self, value: float | int) -> None:
         self.var.set(str(value))
 
 
 class LabeledCombobox(FormRow):
-    """标签 + 下拉框（默认只读）。"""
-
     def __init__(
         self,
         master: tk.Misc,
@@ -136,19 +138,17 @@ class LabeledCombobox(FormRow):
         hint: str | None = None,
     ) -> None:
         super().__init__(master, label)
-        values_list = list(values)
-        self.var = tk.StringVar(value=default or (values_list[0] if values_list else ""))
-        state = "readonly" if readonly else "normal"
+        choices = list(values)
+        self.var = tk.StringVar(value=default or (choices[0] if choices else ""))
         self.combo = ttk.Combobox(
-            self.body,
+            self.controls,
             textvariable=self.var,
-            values=values_list,
-            state=state,
+            values=choices,
+            state="readonly" if readonly else "normal",
             width=width,
         )
-        self.combo.pack(side="left")
-        if hint:
-            ttk.Label(self.body, text=hint, foreground="#666").pack(side="left", padx=(PADX, 0))
+        self.combo.pack(side="left", fill="x", expand=True)
+        self.add_hint(hint)
 
     def get(self) -> str:
         return self.var.get().strip()
@@ -158,19 +158,22 @@ class LabeledCombobox(FormRow):
 
 
 class LabeledCheck(FormRow):
-    """标签 + 复选框（带说明文字）。"""
-
     def __init__(
-        self,
-        master: tk.Misc,
-        label: str,
-        text: str,
-        default: bool = False,
+        self, master: tk.Misc, label: str, text: str, default: bool = False
     ) -> None:
         super().__init__(master, label)
         self.var = tk.BooleanVar(value=bool(default))
-        self.check = ttk.Checkbutton(self.body, text=text, variable=self.var)
-        self.check.pack(side="left")
+        self.check = ttk.Checkbutton(self.controls, variable=self.var)
+        self.check.pack(side="left", anchor="n", pady=(3, 0))
+        self.caption = wrapped_label(self.controls, text)
+        self.caption.pack(side="left", fill="x", expand=True, pady=6)
+        self.caption.bind("<Button-1>", self._toggle)
+
+    def _toggle(self, _event: tk.Event) -> str:
+        if not self.check.instate(["disabled"]):
+            self.check.focus_set()
+            self.check.invoke()
+        return "break"
 
     def get(self) -> bool:
         return bool(self.var.get())
@@ -180,7 +183,7 @@ class LabeledCheck(FormRow):
 
 
 class FileEntry(FormRow):
-    """标签 + 文件路径输入 + 浏览按钮。"""
+    """Path input whose browser follows the same root as command execution."""
 
     def __init__(
         self,
@@ -191,53 +194,59 @@ class FileEntry(FormRow):
         filetypes: Iterable[tuple[str, str]] | None = None,
         save: bool = False,
         directory: bool = False,
+        resolver: Callable[[str], Path] | None = None,
     ) -> None:
         super().__init__(master, label)
         self.var = tk.StringVar(value=default)
-        self.entry = ttk.Entry(self.body, textvariable=self.var, width=width)
+        self.entry = ttk.Entry(self.controls, textvariable=self.var, width=width)
         self.entry.pack(side="left", fill="x", expand=True)
         self._filetypes = list(filetypes) if filetypes else [("所有文件", "*.*")]
         self._save = save
         self._directory = directory
-        ttk.Button(self.body, text="浏览…", command=self._browse, width=8).pack(
-            side="left", padx=(PADX, 0)
+        self._resolver = resolver
+        self.browse_button = ttk.Button(
+            self.controls, text="浏览…", command=self._browse, width=7
         )
+        self.browse_button.pack(side="left", padx=(PADX, 0))
+        self._watch_entry()
+
+    def resolve(self, value: str) -> Path:
+        if self._resolver is not None:
+            return self._resolver(value)
+        ancestor = self.master
+        while ancestor is not None:
+            if hasattr(ancestor, "repo_root"):
+                return resolve_project_path(value, repo_root=ancestor.repo_root)
+            ancestor = getattr(ancestor, "master", None)
+        return resolve_project_path(value, repo_root=PACKAGE_ROOT)
 
     def _browse(self) -> None:
-        initial = self.var.get().strip() or "."
         try:
-            initial_path = Path(initial).expanduser()
-        except Exception:
-            initial_path = Path(".")
-        initial_file = ""
-        if initial_path.exists():
-            if initial_path.is_dir():
-                initial_dir = str(initial_path)
+            initial = self.resolve(self.get() or ".")
+            initial_file = "" if self._directory or initial.is_dir() else initial.name
+            initial_dir = initial if not initial_file else initial.parent
+            while not initial_dir.is_dir() and initial_dir != initial_dir.parent:
+                initial_dir = initial_dir.parent
+            options = {"parent": self.winfo_toplevel(), "initialdir": str(initial_dir)}
+            if self._directory:
+                picked = filedialog.askdirectory(
+                    title=f"选择{self.label.cget('text')}", **options
+                )
             else:
-                initial_dir = str(initial_path.parent)
-                initial_file = initial_path.name
-        else:
-            if initial_path.suffix:
-                initial_dir = str(initial_path.parent) if str(initial_path.parent) else "."
-                initial_file = initial_path.name
-            else:
-                initial_dir = str(initial_path)
-        if self._directory:
-            picked = filedialog.askdirectory(title="选择目录", initialdir=initial_dir)
-        elif self._save:
-            picked = filedialog.asksaveasfilename(
-                title="保存为",
-                initialdir=initial_dir,
-                initialfile=initial_file,
-                filetypes=self._filetypes,
-            )
-        else:
-            picked = filedialog.askopenfilename(
-                title="选择文件",
-                initialdir=initial_dir,
-                initialfile=initial_file,
-                filetypes=self._filetypes,
-            )
+                picker = (
+                    filedialog.asksaveasfilename
+                    if self._save
+                    else filedialog.askopenfilename
+                )
+                picked = picker(
+                    title=f"{'保存' if self._save else '选择'}{self.label.cget('text')}",
+                    initialfile=initial_file,
+                    filetypes=self._filetypes,
+                    **options,
+                )
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("无法打开路径", str(exc), parent=self.winfo_toplevel())
+            return
         if picked:
             self.var.set(picked)
 
@@ -267,9 +276,9 @@ class MaterialSplitEditor(ttk.Frame):
 
         top = ttk.Frame(self)
         top.pack(fill="x")
-        ttk.Button(top, text="扫描/刷新材料文件夹", command=self.refresh_with_message).pack(
-            side="left"
-        )
+        ttk.Button(
+            top, text="扫描/刷新材料文件夹", command=self.refresh_with_message
+        ).pack(side="left")
         self.status = ttk.Label(
             top,
             text="测试比例可以为 0；可由独立波形测试集替代。",
@@ -358,9 +367,13 @@ class MaterialSplitEditor(ttk.Frame):
         try:
             self.refresh()
         except (OSError, ValueError) as exc:
-            messagebox.showerror("扫描材料目录失败", str(exc), parent=self.winfo_toplevel())
+            messagebox.showerror(
+                "扫描材料目录失败", str(exc), parent=self.winfo_toplevel()
+            )
 
-    def as_dict(self, *, validate: bool = True) -> dict[str, tuple[float, float, float]]:
+    def as_dict(
+        self, *, validate: bool = True
+    ) -> dict[str, tuple[float, float, float]]:
         result: dict[str, tuple[float, float, float]] = {}
         for material_key, variables in self._rows.items():
             try:
@@ -368,14 +381,20 @@ class MaterialSplitEditor(ttk.Frame):
             except ValueError as exc:
                 if not validate:
                     continue
-                raise ValueError(f"材料 {material_key} 的划分比例不是合法数字。") from exc
+                raise ValueError(
+                    f"材料 {material_key} 的划分比例不是合法数字。"
+                ) from exc
             if validate:
                 if not all(0.0 <= value <= 1.0 for value in values):
-                    raise ValueError(f"材料 {material_key} 的各划分比例必须位于 [0,1]。")
+                    raise ValueError(
+                        f"材料 {material_key} 的各划分比例必须位于 [0,1]。"
+                    )
                 if values[0] <= 0.0:
                     raise ValueError(f"case 材料 {material_key} 的训练比例必须大于 0。")
                 if abs(sum(values) - 1.0) > 1e-9:
-                    raise ValueError(f"材料 {material_key} 的训练/验证/测试比例之和必须为 1。")
+                    raise ValueError(
+                        f"材料 {material_key} 的训练/验证/测试比例之和必须为 1。"
+                    )
             result[material_key] = values  # type: ignore[assignment]
         return result
 
@@ -404,24 +423,56 @@ class ScrollableFrame(ttk.Frame):
 
     def __init__(self, master: tk.Misc) -> None:
         super().__init__(master)
-        self.canvas = tk.Canvas(self, highlightthickness=0)
+        self.canvas = tk.Canvas(
+            self,
+            highlightthickness=0,
+            background=COLORS["surface"],
+            yscrollincrement=24,
+        )
         self.vbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self.vbar.set)
         self.canvas.pack(side="left", fill="both", expand=True)
         self.vbar.pack(side="right", fill="y")
 
         self.inner = ttk.Frame(self.canvas)
-        self._window_id = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        self._window_id = self.canvas.create_window(
+            (0, 0), window=self.inner, anchor="nw"
+        )
 
         self.inner.bind("<Configure>", self._on_inner_configure)
         self.canvas.bind("<Configure>", self._on_canvas_configure)
         self._bind_mousewheel()
+        self._focus_binding = self._wheel_owner.bind(
+            "<FocusIn>", self._reveal_focused, add="+"
+        )
 
     def _on_inner_configure(self, _event: tk.Event) -> None:
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
     def _on_canvas_configure(self, event: tk.Event) -> None:
         self.canvas.itemconfigure(self._window_id, width=event.width)
+
+    def _reveal_focused(self, event: tk.Event) -> None:
+        ancestor = event.widget
+        while ancestor is not None and ancestor is not self.inner:
+            ancestor = getattr(ancestor, "master", None)
+        if ancestor is self.inner:
+            self.reveal(event.widget)
+
+    def reveal(self, widget: tk.Misc) -> None:
+        """Keep keyboard focus and validation errors inside the visible viewport."""
+        self.update_idletasks()
+        top = widget.winfo_rooty() - self.inner.winfo_rooty()
+        height = self.canvas.winfo_height()
+        current = self.canvas.canvasy(0)
+        if top < current:
+            target = top - 12
+        elif top + widget.winfo_height() > current + height:
+            target = top + widget.winfo_height() - height + 12
+        else:
+            return
+        content_height = max(self.inner.winfo_height(), 1)
+        self.canvas.yview_moveto(max(0, target) / content_height)
 
     def _bind_mousewheel(self) -> None:
         self._wheel_owner = self.winfo_toplevel()
@@ -457,6 +508,8 @@ class ScrollableFrame(ttk.Frame):
 
     def _unbind_mousewheel(self, event: tk.Event) -> None:
         if event.widget is self:
+            if self._focus_binding:
+                self._wheel_owner.unbind("<FocusIn>", self._focus_binding)
             for sequence, binding in self._wheel_bindings.items():
                 if binding:
                     self._wheel_owner.unbind(sequence, binding)

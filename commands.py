@@ -222,14 +222,9 @@ def _apply_predict_cli_overrides(
 
 
 def _resolve_source_dir(config: AIModelConfig, path_value: str | Path) -> Path:
-    path = Path(path_value)
-    if path.is_absolute():
-        return path
-    # 兼容历史写法：传入 database/... 时按 repo_root 解释。
-    if path.parts and path.parts[0] == "database":
-        return config.repo_root / path
-    # 新默认：相对路径按 data_root 解释（例如 raw/10times）。
-    return config.data_root / path
+    from .paths import resolve_source_path
+
+    return resolve_source_path(path_value, data_root=config.data_root, repo_root=config.repo_root)
 
 
 def _resolve_project_path(config: AIModelConfig, path_value: str | Path) -> Path:

@@ -299,6 +299,9 @@ class GuiEventTests(unittest.TestCase):
         app._run_id = 2
         app._closing = False
         app._set_status = Mock()
+        app.task_status = Mock()
+        app._set_busy = Mock()
+        app._log_visible = True
         app._append_to_text = Mock()
         app._on_finish(9, 1)
         app.root.after.assert_not_called()
