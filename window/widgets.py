@@ -415,7 +415,7 @@ class ScrollableFrame(ttk.Frame):
 
         self.inner.bind("<Configure>", self._on_inner_configure)
         self.canvas.bind("<Configure>", self._on_canvas_configure)
-        self._bind_mousewheel(self.canvas)
+        self._bind_mousewheel()
 
     def _on_inner_configure(self, _event: tk.Event) -> None:
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
@@ -423,13 +423,43 @@ class ScrollableFrame(ttk.Frame):
     def _on_canvas_configure(self, event: tk.Event) -> None:
         self.canvas.itemconfigure(self._window_id, width=event.width)
 
-    def _bind_mousewheel(self, widget: tk.Misc) -> None:
-        def _on_wheel(event: tk.Event) -> None:
-            delta = -1 if getattr(event, "delta", 0) > 0 else 1
-            self.canvas.yview_scroll(delta, "units")
+    def _bind_mousewheel(self) -> None:
+        self._wheel_owner = self.winfo_toplevel()
+        self._wheel_bindings = {
+            sequence: self._wheel_owner.bind(sequence, self._on_mousewheel, add="+")
+            for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>")
+        }
+        self.bind("<Destroy>", self._unbind_mousewheel, add="+")
 
-        widget.bind("<Enter>", lambda _e: widget.bind_all("<MouseWheel>", _on_wheel))
-        widget.bind("<Leave>", lambda _e: widget.unbind_all("<MouseWheel>"))
+    def _on_mousewheel(self, event: tk.Event) -> str | None:
+        widget = event.widget
+        while widget is not None:
+            if widget is self:
+                break
+            # Widgets with their own scrolling keep their native behavior.
+            if isinstance(widget, (tk.Text, tk.Listbox, ttk.Treeview, ttk.Combobox)):
+                return None
+            widget = getattr(widget, "master", None)
+        if widget is None:
+            return None
+        number = getattr(event, "num", None)
+        delta = getattr(event, "delta", 0)
+        if number in (4, 5):
+            units = -1 if number == 4 else 1
+        elif delta:
+            units = -max(1, abs(int(delta)) // 120) * (1 if delta > 0 else -1)
+        else:
+            return None
+        if self.canvas.yview() == (0.0, 1.0):
+            return None
+        self.canvas.yview_scroll(units, "units")
+        return "break"
+
+    def _unbind_mousewheel(self, event: tk.Event) -> None:
+        if event.widget is self:
+            for sequence, binding in self._wheel_bindings.items():
+                if binding:
+                    self._wheel_owner.unbind(sequence, binding)
 
 
 def add_button_row(

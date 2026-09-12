@@ -49,7 +49,7 @@ class ValidateTab(BaseCommandTab):
             section,
             "清单选择",
             "自动使用最新的合并清单或多材料集合",
-            default=bool(self._cfg_value("auto_manifest", True)),
+            default=bool(self._cfg_value("auto_manifest", False)),
         )
         self.auto_manifest.pack(fill="x", padx=PADX, pady=PADY)
         if self.auto_manifest.get():

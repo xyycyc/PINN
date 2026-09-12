@@ -11,7 +11,7 @@
    ``settings.json`` 缺失或字段被改坏，GUI 仍能正常启动；
 2. ``load_settings`` 做深度合并：用户文件里有的覆盖默认，
    缺的用默认补齐，避免“漏配置就崩”的情况；
-3. ``save_settings`` 把当前 dict 以 UTF-8 + 2 空格缩进写回 JSON，
+3. ``Settings.save`` 把当前 dict 以 UTF-8 + 2 空格缩进写回 JSON，
    方便人手工编辑；
 4. 每个 section 的 key 与对应 Tab 的控件一一对应，键名建议保持
    和 CLI 参数 ``--xxx`` 中下划线风格一致，方便对照。
@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import copy
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -90,7 +92,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "clip_quantile": 1.0,
         "smooth_window": 11,
         "manifest": "database",
-        "auto_manifest": True,
+        "auto_manifest": False,
         "train_name": "",
         "checkpoint_name": "ai_model.pt",
         "separate_materials": False,
@@ -109,7 +111,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "clip_quantile": 1.0,
         "smooth_window": 11,
         "manifest": "database/test_manifest.json",
-        "auto_manifest": True,
+        "auto_manifest": False,
         "checkpoint": "result/train/checkpoint/ai_model/ai_model.pt",
         "auto_material_routing": False,
         "material_router": "",
@@ -130,7 +132,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "data_root": "database",
         "result_root": "result",
         "manifest": "database/combined_manifest.json",
-        "auto_manifest": True,
+        "auto_manifest": False,
     },
     "online_update": {
         "data_root": "database",
@@ -140,7 +142,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "clip_quantile": 1.0,
         "smooth_window": 11,
         "manifest": "database/combined_manifest.json",
-        "auto_manifest": True,
+        "auto_manifest": False,
         "checkpoint": "",
         "override_preprocess": False,
         "rule_dimension": "one",
@@ -235,12 +237,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """深度合并：``override`` 中已有的键覆盖 ``base``，否则保留 ``base``。"""
 
-    result = dict(base)
+    result = copy.deepcopy(base)
     for key, value in override.items():
         if key in result and isinstance(result[key], dict) and isinstance(value, dict):
             result[key] = _deep_merge(result[key], value)
         else:
-            result[key] = value
+            result[key] = copy.deepcopy(value)
     return result
 
 
@@ -249,9 +251,7 @@ class Settings:
 
     def __init__(self, data: dict[str, Any] | None = None, path: Path | None = None) -> None:
         self._path = Path(path) if path is not None else SETTINGS_PATH
-        if data is None:
-            data = copy.deepcopy(DEFAULT_SETTINGS)
-        self._data = data
+        self._data = copy.deepcopy(DEFAULT_SETTINGS if data is None else data)
 
     @property
     def path(self) -> Path:
@@ -263,11 +263,11 @@ class Settings:
 
     # ---- 取值 --------------------------------------------------------------
     def section(self, name: str) -> dict[str, Any]:
-        """返回某个 section 的浅拷贝；用于初始化表单时取默认值。"""
+        """返回隔离的 section 副本；调用方修改表单数据不会更改默认值。"""
 
         section = self._data.get(name, {})
         if not isinstance(section, dict):
-            return {}
+            section = {}
         # 用 DEFAULT_SETTINGS 兜底，缺失字段也能拿到默认值。
         default = DEFAULT_SETTINGS.get(name, {})
         merged = _deep_merge(default if isinstance(default, dict) else {}, section)
@@ -284,17 +284,22 @@ class Settings:
         existing = self._data.get(name, {})
         if not isinstance(existing, dict):
             existing = {}
-        existing.update(payload)
+        existing.update(copy.deepcopy(payload))
         self._data[name] = existing
 
     # ---- IO ----------------------------------------------------------------
     def save(self, path: Path | None = None) -> Path:
         target = Path(path) if path is not None else self._path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(
-            json.dumps(self._data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        _write_settings(target, self._data)
+        return target
+
+    def save_sections(self, sections: dict[str, dict[str, Any]]) -> Path:
+        """Commit collected forms only after the entire file is safely saved."""
+        candidate = Settings(self._data, path=self._path)
+        for name, payload in sections.items():
+            candidate.update_section(name, payload)
+        target = candidate.save()
+        self._data = candidate.data
         return target
 
     def reload(self) -> None:
@@ -309,7 +314,7 @@ def load_settings(path: Path | None = None) -> Settings:
     if not target.exists():
         return Settings(copy.deepcopy(DEFAULT_SETTINGS), path=target)
     try:
-        loaded = json.loads(target.read_text(encoding="utf-8"))
+        loaded = json.loads(target.read_text(encoding="utf-8-sig"))
         if not isinstance(loaded, dict):
             raise ValueError("settings.json 顶层必须是 JSON 对象")
     except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -321,14 +326,29 @@ def load_settings(path: Path | None = None) -> Settings:
 
 
 def write_default_settings_file(path: Path | None = None, force: bool = False) -> Path:
-    """把内置默认 schema 写到 ``settings.json``（已存在时默认不覆盖）。"""
-
+    """Write the built-in settings, preserving an existing file by default."""
     target = Path(path) if path is not None else SETTINGS_PATH
     if target.exists() and not force:
         return target
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(
-        json.dumps(DEFAULT_SETTINGS, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    _write_settings(target, DEFAULT_SETTINGS)
     return target
+
+
+def _write_settings(target: Path, data: dict[str, Any]) -> None:
+    """Replace a complete UTF-8 file; a failed save leaves the previous file intact."""
+    content = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=target.parent,
+            prefix=f".{target.name}.", suffix=".tmp", delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)

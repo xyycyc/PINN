@@ -19,11 +19,7 @@ from .material_registry import ensure_material_csv, load_material_to_idx, regist
 from .preprocess import parse_preprocess_steps
 from .preprocess_cache import load_or_apply_preprocessed_waveform
 
-SPLIT_EXPERIMENT_POLICIES: tuple[str, ...] = (
-    "uniform",
-    "all_experiment_train",
-    "all_experiment_test",
-)
+from .split_policy import SPLIT_EXPERIMENT_POLICIES
 
 
 def latest_split_manifest(data_root: str | Path, kind: str) -> Path | None:

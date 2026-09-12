@@ -6,7 +6,6 @@ import os
 import queue
 import subprocess
 import sys
-import threading
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
@@ -19,7 +18,8 @@ from .runner import (
     default_subprocess_cwd,
     format_command,
 )
-from .settings import SETTINGS_PATH, Settings, load_settings
+from .settings import Settings, load_settings
+from ..paths import resolve_project_path
 from .tabs import (
     BuildDbTab,
     DemoTab,
@@ -67,7 +67,9 @@ class AiModelApp:
         self.root.minsize(1080, 720)
         configure_styles(self.root)
 
-        self._log_queue: "queue.Queue[str | None]" = queue.Queue()
+        self._log_queue: queue.Queue[str | tuple[int, int | None]] = queue.Queue()
+        self._run_id = 0
+        self._closing = False
         self._poll_after_id: str | None = None
         self.runner = CommandRunner(
             log_callback=self._log_from_thread,
@@ -87,15 +89,12 @@ class AiModelApp:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _resolve_launch_root(self) -> Path:
-        """运行 ``python -m ai_model`` 时的工作目录；空配置则用包目录上一级。"""
-
-        raw = str(self.settings.section("common").get("launch_root", "")).strip()
-        if not raw:
-            return default_subprocess_cwd()
-        path = Path(raw).expanduser()
-        if not path.is_absolute():
-            return (self.package_root / path).resolve()
-        return path.resolve()
+        """Use the current form immediately; saving controls the next session."""
+        tab = getattr(self, "_path_settings_tab", None)
+        raw = (tab.launch_env["launch_root"].get() if tab is not None
+               else self.settings.get("common", "launch_root", ""))
+        raw = str(raw).strip()
+        return resolve_project_path(raw, repo_root=self.package_root) if raw else self.package_root.parent
 
     # ------------------------------------------------------------------
     # UI 构建
@@ -169,6 +168,7 @@ class AiModelApp:
                 )
                 if group_name == "主流程" and isinstance(tab, PathSettingsTab):
                     path_settings_ref = tab
+                    self._path_settings_tab = tab
                 inner_nb.add(tab, text=getattr(tab_cls, "title", tab_cls.__name__))
                 self._tabs.append(tab)
 
@@ -226,11 +226,16 @@ class AiModelApp:
         if self.runner.is_running:
             messagebox.showwarning("任务进行中", "已有命令在运行，请先停止当前任务。")
             return
+        launch_root = self._resolve_launch_root()
+        if not launch_root.is_dir():
+            messagebox.showwarning("路径有误", f"子进程工作目录不存在或不是目录: {launch_root}")
+            return
+        self._run_id += 1
+        run_id = self._run_id
         self._set_status(f"运行中: {format_command(cmd)[:80]}…")
         started = self.runner.run(
-            cmd,
-            cwd=self._resolve_launch_root(),
-            on_finish=self._on_finish,
+            cmd, cwd=launch_root,
+            on_finish=lambda code: self._on_finish(code, run_id),
         )
         if not started:
             self._set_status("启动失败")
@@ -239,17 +244,12 @@ class AiModelApp:
         if not self.runner.is_running:
             self._log_line("[app] 当前没有正在运行的任务。")
             return
-        self.runner.stop()
+        self._set_status("正在停止任务…")
+        self.runner.request_stop()
 
-    def _on_finish(self, exit_code: int | None) -> None:
-        # 工作线程回调，转到主线程刷新状态栏。
-        self._log_queue.put(None)
-        self.root.after(
-            0,
-            lambda: self._set_status(
-                f"已结束，退出码：{exit_code}" if exit_code is not None else "已结束"
-            ),
-        )
+    def _on_finish(self, exit_code: int | None, run_id: int) -> None:
+        # Worker callbacks only enqueue data; all Tk calls stay on the main thread.
+        self._log_queue.put((run_id, exit_code))
 
     # ------------------------------------------------------------------
     # 配置菜单回调
@@ -266,7 +266,7 @@ class AiModelApp:
         ):
             return
         try:
-            self.settings = load_settings()
+            self.settings.reload()
         except Exception as exc:
             messagebox.showerror("加载失败", str(exc))
             return
@@ -275,20 +275,16 @@ class AiModelApp:
         self._set_status("配置已重载")
 
     def save_settings_from_forms(self) -> None:
-        """收集所有功能页的表单状态，按配置段写回配置文件。"""
-
+        """Collect every form before committing either memory or the file."""
         try:
+            sections = {}
             for tab in self._tabs:
                 section = getattr(tab, "settings_section", "")
-                if not section:
-                    continue
-                if not hasattr(tab, "to_settings_section"):
-                    continue
-                payload = tab.to_settings_section()
-                if not payload:
-                    continue
-                self.settings.update_section(section, payload)
-            target = self.settings.save()
+                if section and hasattr(tab, "to_settings_section"):
+                    payload = tab.to_settings_section()
+                    if payload:
+                        sections[section] = payload
+            target = self.settings.save_sections(sections)
         except Exception as exc:
             messagebox.showerror("保存失败", str(exc))
             return
@@ -320,16 +316,15 @@ class AiModelApp:
         self._set_status(f"配置文件路径已复制: {self.settings.path}")
 
     def _rebuild_tabs(self) -> None:
-        """配置变化时重新装配整套 Notebook。"""
-
-        # 先把日志面板下方的旧 PanedWindow 拆掉，重建一个新的
+        """Rebuild forms after reload while preserving the session log."""
+        previous_log = self.log_text.get("1.0", "end-1c")
+        autoscroll = self._autoscroll_var.get()
         for child in list(self.root.children.values()):
             if isinstance(child, ttk.Panedwindow):
                 child.destroy()
-        # 状态栏要保留，body 重新搭起来
         self._build_body()
-        # status bar 需要被推到底层；重建 body 不会覆盖它。
-        # 重新填一条提示日志
+        self._autoscroll_var.set(autoscroll)
+        self._append_to_text(previous_log)
         self._log_line("[app] 功能页已根据新配置重建。")
 
     # ------------------------------------------------------------------
@@ -344,14 +339,24 @@ class AiModelApp:
         self._log_queue.put(line)
 
     def _poll_log_queue(self) -> None:
-        try:
-            while True:
+        lines = []
+        # Bound work per tick so verbose training cannot starve UI events.
+        for _ in range(500):
+            try:
                 item = self._log_queue.get_nowait()
-                if item is None:
-                    continue
-                self._append_to_text(item)
-        except queue.Empty:
-            pass
+            except queue.Empty:
+                break
+            if isinstance(item, tuple):
+                run_id, exit_code = item
+                if run_id == self._run_id:
+                    self._set_status("启动失败" if exit_code == -1 else f"已结束，退出码：{exit_code}")
+            else:
+                lines.append(item)
+        if lines:
+            self._append_to_text("".join(lines))
+        if self._closing and not self.runner.is_running:
+            self._destroy_window()
+            return
         self._poll_after_id = self.root.after(80, self._poll_log_queue)
 
     def _append_to_text(self, text: str) -> None:
@@ -405,19 +410,23 @@ class AiModelApp:
     # 关闭
     # ------------------------------------------------------------------
     def _on_close(self) -> None:
+        if self._closing:
+            return
         if self.runner.is_running:
             if not messagebox.askyesno(
                 "确认退出", "仍有命令在运行，确定要退出吗？退出会终止子进程。"
             ):
                 return
-            self.runner.stop()
-            # 给子进程一点时间退出
-            threading.Event().wait(0.2)
+            self._closing = True
+            self._set_status("正在停止任务，结束后关闭窗口…")
+            self.runner.request_stop()
+            return
+        self._destroy_window()
+
+    def _destroy_window(self) -> None:
         if self._poll_after_id is not None:
-            try:
-                self.root.after_cancel(self._poll_after_id)
-            except tk.TclError:
-                pass
+            self.root.after_cancel(self._poll_after_id)
+            self._poll_after_id = None
         self.root.destroy()
 
     def _show_about(self) -> None:
@@ -425,7 +434,7 @@ class AiModelApp:
             "关于本程序",
             "温度场模型中文图形化操作面板。\n"
             "包含建库、训练、预测、校验、增量训练、一键演示、项目清理等主流程功能。\n\n"
-            f"配置文件：{SETTINGS_PATH}\n"
+            f"配置文件：{self.settings.path}\n"
             "源代码位于本项目的图形面板目录。",
         )
 

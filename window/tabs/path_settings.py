@@ -52,8 +52,7 @@ class PathSettingsTab(BaseCommandTab):
             payload = self.to_settings_section()
             if not payload:
                 return
-            self.settings.update_section("common", payload)
-            path = self.settings.save()
+            path = self.settings.save_sections({"common": payload})
         except ValueError as exc:
             messagebox.showwarning("参数有误", str(exc))
             return

@@ -10,6 +10,7 @@ from typing import Any
 import torch
 
 from ..config import AIModelConfig
+from ..paths import resolve_project_path
 from ..model import (
     DIMENSION_CHOICES,
     MODE_CHOICES,
@@ -61,13 +62,7 @@ def format_checkpoint_label(row: dict[str, str]) -> str:
 
 
 def resolve_data_root(data_root: str | Path) -> Path:
-    """相对路径按 ai_model 包目录解析，避免 GUI 子进程 cwd 与包根不一致时读错文件。"""
-    root = Path(str(data_root).strip() or "database")
-    if root.is_absolute():
-        return root
-    if root.parts and root.parts[0].casefold() == _PACKAGE_ROOT.name.casefold():
-        return (_PACKAGE_ROOT.parent / root).resolve()
-    return _PACKAGE_ROOT / root
+    return resolve_project_path(str(data_root).strip() or "database", repo_root=_PACKAGE_ROOT)
 
 
 def rule_csv_for_data_root(data_root: str | Path) -> Path:
@@ -150,15 +145,8 @@ def unique_materials(rows: list[dict[str, str]]) -> list[str]:
 
 
 def resolve_gui_project_path(path_value: str | Path, *, repo_root: str | Path) -> Path:
-    """Mirror the main CLI's cwd-independent project path compatibility."""
-
-    root = Path(repo_root).resolve()
-    path = Path(path_value).expanduser()
-    if path.is_absolute():
-        return path.resolve()
-    if path.parts and path.parts[0].casefold() == root.name.casefold():
-        return (root.parent / path).resolve()
-    return (root / path).resolve()
+    """Compatibility wrapper shared with configuration and CLI paths."""
+    return resolve_project_path(path_value, repo_root=repo_root)
 
 
 def manifest_model_kind(manifest_path: str | Path, *, repo_root: str | Path) -> str:

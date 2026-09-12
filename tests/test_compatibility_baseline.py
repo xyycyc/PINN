@@ -302,6 +302,7 @@ class CompatibilityBaselineTests(unittest.TestCase):
                 )
                 for tab_cls, expected in cases:
                     tab = tab_cls(notebook, path_settings_tab=path_tab, **kwargs)
+                    tab.auto_manifest.set(True)  # Explicit opt-in after approved R1.
                     command = tab.compose_command()
                     parsed = parser.parse_args(command[command.index("ai_model") + 1:])
                     self.assertEqual(parsed.manifest, str(expected) if expected else None)

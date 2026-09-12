@@ -1,5 +1,38 @@
 # ai_model：基于超声全波形与物理约束的人工智能温度场重构系统
 
+## 快速开始与版本
+
+当前目录为 `E:\code\ai_model`。已交付版本保存在 [`submitted` 分支](https://github.com/xyycyc/PINN/tree/submitted)（`626dc24`）；交付后重构使用 `codex/refactor-portability`。修改范围、验证记录与待批准事项见[重构记录](docs/refactoring.md)。
+
+在项目目录直接执行：
+
+```powershell
+cd E:\code\ai_model
+python -m pip install -r requirements.txt
+python run.py --help
+python run.py --gui
+```
+
+`python run.py train ...` 等价于在上一级目录运行 `python -m ai_model train ...`。下文保留包入口示例，兼容原有脚本。
+
+第一次使用 GUI：先设置输入/输出根目录，再依次建库、选择数据集训练、选择同一数据集对应的模型预测。默认手动选择数据清单；如需自动选择最新清单，可在各页面开启相应开关。程序不会自动下载原始数据或模型；原始数据、权重和运行结果被 `.gitignore` 排除，需要另外保留。
+
+| 入口或模块 | 当前职责 |
+| --- | --- |
+| `build-db` / `data_process/` | 识别 case、波形与节点温度配对、采样、划分、清单与多材料集合 |
+| `train` / `model/trainer.py` | 固定节点或旧网格模型训练、验证、早停与 checkpoint 登记 |
+| `predict` / `model/predict.py` | 单模型或材料路由预测、可选绘图和测速 |
+| `validate` | 数据需求核查；不重新运行预测或重算历史验收误差 |
+| `online-update` | 基于兼容 checkpoint 对全部可训练参数继续优化，写出新权重 |
+| `demo` | 连续建库、划分、训练和校验；不包含自动预测 |
+| `window/` | Tkinter 操作界面与后台命令执行 |
+| `batch/` | 保留的批量实验脚本；默认主窗口不显示这些页面 |
+| `tests/` | 数据、模型、GUI/CLI 兼容性回归测试 |
+| `cli.py` / `cli_arguments.py` / `commands.py` | 轻量入口 / 参数声明 / 六个独立命令处理函数 |
+| `paths.py` | 配置、CLI 与 GUI 共用的项目路径解析 |
+
+本文的数据规模、误差和耗时属于历史交付记录，不表示任意数据集或环境下都能取得同样结果。本轮代码检查和测试没有重新测量这些指标。
+
 ## 1. 系统概述
 
 `ai_model` 是面向多层材料、金属基复合材料和碳基/硅基复合材料的人工智能温度场重构系统。系统以超声全波形张量为直接输入，通过 CNN–LSTM–BP 融合网络学习波形传播特征与温度场之间的非线性映射，并将温度场数据监督与基于固定物理节点空间邻接关系的 PINN 物理约束设计相结合，实现一维、二维、稳态和瞬态温度场的智能重构。
@@ -12,7 +45,7 @@
 2. W 基体/SiC 颗粒金属基复合材料；
 3. SiC 颗粒/CVI-SiC 基体硅基复合材料。
 
-## 2. 交付数据与性能指标
+## 2. 历史交付数据与性能指标
 
 ### 2.1 数据资源
 
@@ -86,7 +119,7 @@
 
 系统默认采用温度场监督训练；物理约束训练作为固定节点模型的扩展训练形式，通过空间平滑先验与离散拉普拉斯残差实现。
 
-训练目标可概括为：
+固定节点 `normal` 模式只计算温度监督损失；`residual_pinn` 模式的训练目标为：
 
 $$
 L=
@@ -142,10 +175,9 @@ $$
 推荐使用 Python 3.10 或更高版本。在 `ai_model` 的上一级目录打开 PowerShell：
 
 ```powershell
-cd D:\Desktop\code
+cd E:\code
 python --version
-python -m pip install --upgrade pip
-python -m pip install torch numpy pandas tqdm matplotlib scipy Pillow
+python -m pip install -r ai_model/requirements.txt
 ```
 
 GPU 运行环境应安装与本机 CUDA 和显卡驱动相匹配的 PyTorch。Windows 图形界面使用 `tkinter`，可通过以下命令检查：
@@ -251,7 +283,7 @@ python -m ai_model.window
 
 ### 7.1 路径设置
 
-设置输入根目录、输出根目录、Python 解释器和任务工作目录。表单参数可保存为用户配置，供后续任务复用。
+设置输入根目录、输出根目录和任务工作目录。Python 解释器固定为启动 GUI 的解释器。项目相对路径以 `ai_model` 包目录为基准，原始输入相对路径（如 `raw/wumu`）以输入根目录为基准；外部绝对路径需要在迁移后核对。
 
 ### 7.2 构建数据库
 
@@ -293,11 +325,11 @@ python -m ai_model.window
 
 ### 7.5 校验数据
 
-校验模块综合检查数据规模、数据格式、材料信息、温度范围、网格一致性、采样索引、数据划分和预测指标，并输出完整核查报告。
+校验入口对选定清单或材料集合执行数据需求核查并写出 `requirement_3_3_report.json`。节点、采样和数据划分的一致性检查分布在建库、数据加载和训练/预测入口；预测误差由 `predict` 生成，`validate` 不重新预测。
 
 ### 7.6 增量训练与迁移学习
 
-增量训练页加载基础 checkpoint 和新增数据清单，可配置训练轮数、设备和分支权重。系统保留基于参数冻结与部分权重更新的迁移学习扩展设计，为新增材料和新增数据的模型适配提供技术基础。新模型与基础任务建立关联，训练报告写入独立时间目录，并登记到模型规则库。
+增量训练页加载基础 checkpoint 和新增数据清单，可配置训练轮数、设备和分支权重。当前优化全部可训练参数，没有冻结编码器或仅训练部分层的选项；新增冻结策略需另行设计。新模型与基础任务建立关联，训练报告写入独立时间目录，并登记到模型规则库。
 
 ### 7.7 一键演示
 
@@ -497,7 +529,7 @@ python -m ai_model demo --help
 - `detrend`：消除基线趋势；
 - `robust_norm`：采用稳健统计量完成幅值归一化。
 
-波形统计参数随模型保存，并在预测和增量训练阶段保持一致。
+可选预处理配置随 checkpoint 保存，预测与增量训练默认继承；显式覆盖才改变这些配置。波形 z-score 在模型输入阶段按样本计算。固定节点温度标准化使用训练集统计量，并随 checkpoint 保存。
 
 ## 10. 模型与结果管理
 
@@ -554,7 +586,7 @@ AI 方法与传统方法统一以完成一个完整温度场反演任务所需�
 在 `ai_model` 的上一级目录执行：
 
 ```powershell
-cd D:\Desktop\code
+cd E:\code
 python -m ai_model --help
 ```
 
@@ -595,3 +627,14 @@ $env:PYTHONIOENCODING = "utf-8"
 - 自动化测试、数据质量检查和版本一致性验证。
 
 系统通过标准化数据格式、确定性物理节点采样、模型元数据管理和完整结果导出，为温度场重构任务提供统一、稳定、可追溯的技术支撑。
+
+## 14. 开发与验证
+
+在 `E:\code` 执行：
+
+```powershell
+python -m pip install pytest
+python -m pytest ai_model/tests -q
+```
+
+也可以在 `E:\code\ai_model` 直接执行 `python -m pytest -q`；`pyproject.toml` 已配置测试目录和包路径。模型格式见[模型迁移说明](docs/model_migration.md)，GUI 操作细节见[窗口说明](window/README.md)，历史交互约束见[兼容基线](docs/compatibility_baseline.md)。

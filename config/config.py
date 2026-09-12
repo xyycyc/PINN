@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..paths import resolve_project_path
+
 
 @dataclass
 class AIModelConfig:
@@ -44,16 +46,12 @@ class AIModelConfig:
     smooth_window: int = 11
 
     def __post_init__(self) -> None:
+        self.repo_root = Path(self.repo_root).expanduser().resolve()
         self.data_root = self.resolve_path(self.data_root)
         self.result_root = self.resolve_path(self.result_root)
 
     def resolve_path(self, path_like: str | Path) -> Path:
-        path = Path(path_like)
-        if path.is_absolute():
-            return path
-        if path.parts and path.parts[0].casefold() == self.repo_root.name.casefold():
-            return (self.repo_root.parent / path).resolve()
-        return self.repo_root / path
+        return resolve_project_path(path_like, repo_root=self.repo_root)
 
     @property
     def database_dir(self) -> Path:

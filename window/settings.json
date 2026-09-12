@@ -55,7 +55,7 @@
     "clip_quantile": 1.0,
     "smooth_window": 11,
     "manifest": "database",
-    "auto_manifest": true,
+    "auto_manifest": false,
     "train_name": "",
     "checkpoint_name": "ai_model.pt",
     "separate_materials": false,
@@ -74,7 +74,7 @@
     "clip_quantile": 1.0,
     "smooth_window": 11,
     "manifest": "database/test_manifest.json",
-    "auto_manifest": true,
+    "auto_manifest": false,
     "checkpoint": "result/train/checkpoint/ai_model/ai_model.pt",
     "auto_material_routing": false,
     "material_router": "",
@@ -95,7 +95,7 @@
     "data_root": "database",
     "result_root": "result",
     "manifest": "database/combined_manifest.json",
-    "auto_manifest": true
+    "auto_manifest": false
   },
   "online_update": {
     "data_root": "database",
@@ -105,7 +105,7 @@
     "clip_quantile": 1.0,
     "smooth_window": 11,
     "manifest": "database/combined_manifest.json",
-    "auto_manifest": true,
+    "auto_manifest": false,
     "checkpoint": "",
     "override_preprocess": false,
     "rule_dimension": "one",
